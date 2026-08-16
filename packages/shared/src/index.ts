@@ -6,3 +6,4 @@
 export * from './room-state';
 export * from './p2p-protocol';
 export * from './signaling-protocol';
+export * from './youtube-url';

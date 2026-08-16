@@ -1,4 +1,5 @@
-import { Song } from '@karaokenatin/shared';
+import { useState } from 'react';
+import { Song, youtubeShortUrl } from '@karaokenatin/shared';
 import { invoke } from '@tauri-apps/api/core';
 import { useFocusable, FocusContext } from '@noriginmedia/norigin-spatial-navigation';
 
@@ -30,6 +31,12 @@ const Icons = {
             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
         </svg>
     ),
+    copy: (
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+    ),
 };
 
 /** Focusable queue action button for DPAD navigation */
@@ -59,6 +66,7 @@ const QueueActionButton = ({ children, onClick, disabled, className, title }: {
 
 const Queue = ({ songs }: QueueProps) => {
     const { ref, focusKey } = useFocusable();
+    const [copiedSongId, setCopiedSongId] = useState<string | null>(null);
 
     const handleMoveUp = async (songId: string) => {
         try {
@@ -101,6 +109,16 @@ const Queue = ({ songs }: QueueProps) => {
             });
         } catch (error) {
             console.error('[Queue] Failed to remove song:', error);
+        }
+    };
+
+    const handleCopyLink = async (song: Song) => {
+        try {
+            await navigator.clipboard.writeText(youtubeShortUrl(song.youtubeId));
+            setCopiedSongId(song.id);
+            window.setTimeout(() => setCopiedSongId((current) => current === song.id ? null : current), 1800);
+        } catch (error) {
+            console.error('[Queue] Failed to copy song link:', error);
         }
     };
 
@@ -168,6 +186,12 @@ const Queue = ({ songs }: QueueProps) => {
                                     {Icons.chevronDown}
                                 </QueueActionButton>
                                 <QueueActionButton
+                                    onClick={() => handleCopyLink(song)}
+                                    title="Copiar enlace"
+                                >
+                                    {Icons.copy}
+                                </QueueActionButton>
+                                <QueueActionButton
                                     className="queue-action-btn-danger"
                                     onClick={() => handleRemove(song.id)}
                                     title="Remove"
@@ -175,6 +199,9 @@ const Queue = ({ songs }: QueueProps) => {
                                     {Icons.trash}
                                 </QueueActionButton>
                             </div>
+                            {copiedSongId === song.id && (
+                                <div className="queue-copy-feedback">Enlace copiado</div>
+                            )}
                         </div>
                     ))}
                 </div>

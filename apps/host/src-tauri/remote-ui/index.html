@@ -1227,6 +1227,7 @@
             search: '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>',
             plus: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>',
             externalLink: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>',
+            share: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>',
             chevronUp: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"></polyline></svg>',
             chevronDown: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>',
             chevronsUp: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 11 12 6 7 11"></polyline><polyline points="17 18 12 13 7 18"></polyline></svg>',
@@ -1434,6 +1435,9 @@
                                         <button class="queue-action-btn-mini" onclick="moveQueueItem('${song.id}', 'down')" title="Move down" ${i === queue.length - 1 || isAnyMoveLoading ? 'disabled' : ''}>
                                             ${icons.chevronDown}
                                         </button>
+                                        <button class="queue-action-btn-mini" onclick="shareSongLink('${song.youtubeId}')" title="Compartir">
+                                            ${icons.share}
+                                        </button>
                                         <button class="queue-action-btn-mini delete${isRemoveLoading ? ' loading' : ''}" onclick="removeFromQueue('${song.id}')" title="Remove" ${isRemoveLoading ? 'disabled' : ''}>
                                             ${isRemoveLoading ? icons.spinnerSmall : icons.trash}
                                         </button>
@@ -1575,6 +1579,9 @@
                                 </button>
                                 <button class="queue-action-btn" onclick="moveQueueItem('${song.id}', 'down')" title="Move down" ${isAnyMoveLoading ? 'disabled' : ''}>
                                     ${icons.chevronDown}
+                                </button>
+                                <button class="queue-action-btn" onclick="shareSongLink('${song.youtubeId}')" title="Compartir">
+                                    ${icons.share}
                                 </button>
                                 <button class="queue-action-btn delete${isRemoveLoading ? ' loading' : ''}" onclick="removeFromQueue('${song.id}')" title="Remove" ${isRemoveLoading ? 'disabled' : ''}>
                                     ${isRemoveLoading ? icons.spinnerSmall : icons.trash}
@@ -1996,6 +2003,47 @@
             }).catch(() => {
                 showToast('Failed to copy');
             });
+        }
+
+        function youtubeShortUrl(videoId) {
+            return `https://youtu.be/${videoId}`;
+        }
+
+        async function copyText(text) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(text);
+                return;
+            }
+
+            const input = document.createElement('textarea');
+            input.value = text;
+            input.setAttribute('readonly', '');
+            input.style.position = 'fixed';
+            input.style.opacity = '0';
+            document.body.appendChild(input);
+            input.select();
+            document.execCommand('copy');
+            document.body.removeChild(input);
+        }
+
+        async function shareSongLink(videoId) {
+            const url = youtubeShortUrl(videoId);
+            try {
+                if (navigator.share) {
+                    await navigator.share({ url });
+                } else {
+                    await copyText(url);
+                }
+                showToast('Enlace copiado');
+            } catch (err) {
+                if (err && err.name === 'AbortError') return;
+                try {
+                    await copyText(url);
+                    showToast('Enlace copiado');
+                } catch {
+                    showToast('Failed to copy');
+                }
+            }
         }
 
         function sendCommand(cmd) {

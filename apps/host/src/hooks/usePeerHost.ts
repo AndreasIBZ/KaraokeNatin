@@ -192,7 +192,7 @@ export function usePeerHost() {
                     conn.send({
                         type: 'ERROR',
                         code: 'SEARCH_FAILED',
-                        message: error instanceof Error ? error.message : 'Search failed'
+                        message: typeof error === 'string' ? error : error instanceof Error ? error.message : 'Search failed'
                     });
                 }
                 return;
@@ -223,7 +223,7 @@ export function usePeerHost() {
                     const errorMsg: HostBroadcast = {
                         type: 'ERROR',
                         code: 'COMMAND_FAILED',
-                        message: error instanceof Error ? error.message : 'Unknown error',
+                        message: typeof error === 'string' ? error : error instanceof Error ? error.message : 'Unknown error',
                     };
                     conn.send(errorMsg);
                 }

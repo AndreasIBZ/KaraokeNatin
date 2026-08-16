@@ -118,6 +118,7 @@ dependencies = [
  "log",
  "parking_lot 0.12.5",
  "rand 0.8.5",
+ "reqwest",
  "rusty_ytdl",
  "serde",
  "serde_json",

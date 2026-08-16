@@ -1,10 +1,15 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 use parking_lot::RwLock;
 use rusty_ytdl::search::{YouTube, SearchResult as YtSearchResult, SearchOptions, SearchType};
 use std::time::Duration;
 use tokio::time::timeout;
+
+const YOUTUBE_VIDEOS_API_URL: &str = "https://www.googleapis.com/youtube/v3/videos";
+const YOUTUBE_EMBEDDABLE_CHECK_TIMEOUT_SECS: u64 = 10;
+const YOUTUBE_VIDEOS_LIST_BATCH_SIZE: usize = 50;
+const UNPLAYABLE_VIDEO_MESSAGE: &str = "Esta version no se puede reproducir. Elige otra.";
 
 /// Search result from YouTube
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,6 +20,127 @@ pub struct SearchResult {
     pub duration: String,
     pub thumbnail: String,
     pub url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct VideosListResponse {
+    #[serde(default)]
+    items: Vec<VideoStatusItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VideoStatusItem {
+    id: String,
+    status: VideoStatus,
+}
+
+#[derive(Debug, Deserialize)]
+struct VideoStatus {
+    #[serde(default)]
+    embeddable: Option<bool>,
+}
+
+pub fn unplayable_video_message() -> String {
+    UNPLAYABLE_VIDEO_MESSAGE.to_string()
+}
+
+fn youtube_api_key() -> Result<String, String> {
+    std::env::var("YOUTUBE_API_KEY")
+        .ok()
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+        .ok_or_else(|| "YOUTUBE_API_KEY is required to validate YouTube embed playback".to_string())
+}
+
+fn unique_video_ids(video_ids: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    video_ids
+        .iter()
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .filter_map(|id| {
+            if seen.insert(id.to_string()) {
+                Some(id.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn embeddable_ids_from_response(response: VideosListResponse) -> HashSet<String> {
+    response
+        .items
+        .into_iter()
+        .filter(|item| item.status.embeddable.unwrap_or(false))
+        .map(|item| item.id)
+        .collect()
+}
+
+pub fn filter_results_by_embeddable(
+    results: Vec<SearchResult>,
+    embeddable_ids: &HashSet<String>,
+) -> Vec<SearchResult> {
+    results
+        .into_iter()
+        .filter(|result| embeddable_ids.contains(&result.id))
+        .collect()
+}
+
+pub async fn fetch_embeddable_video_ids(video_ids: &[String]) -> Result<HashSet<String>, String> {
+    let video_ids = unique_video_ids(video_ids);
+    if video_ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let api_key = youtube_api_key()?;
+    let client = reqwest::Client::new();
+    let mut embeddable_ids = HashSet::new();
+
+    for chunk in video_ids.chunks(YOUTUBE_VIDEOS_LIST_BATCH_SIZE) {
+        let ids = chunk.join(",");
+        let response = timeout(
+            Duration::from_secs(YOUTUBE_EMBEDDABLE_CHECK_TIMEOUT_SECS),
+            client
+                .get(YOUTUBE_VIDEOS_API_URL)
+                .query(&[
+                    ("part", "status"),
+                    ("id", ids.as_str()),
+                    ("key", api_key.as_str()),
+                ])
+                .send(),
+        )
+        .await
+        .map_err(|_| "YouTube embeddable check timed out".to_string())?
+        .map_err(|e| format!("YouTube embeddable check failed: {}", e))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(format!("YouTube embeddable check failed: HTTP {}", status));
+        }
+
+        let parsed = timeout(
+            Duration::from_secs(YOUTUBE_EMBEDDABLE_CHECK_TIMEOUT_SECS),
+            response.json::<VideosListResponse>(),
+        )
+        .await
+        .map_err(|_| "YouTube embeddable check response timed out".to_string())?
+        .map_err(|e| format!("YouTube embeddable check returned invalid data: {}", e))?;
+
+        embeddable_ids.extend(embeddable_ids_from_response(parsed));
+    }
+
+    Ok(embeddable_ids)
+}
+
+pub async fn ensure_video_is_embeddable(video_id: &str) -> Result<(), String> {
+    let video_ids = vec![video_id.to_string()];
+    let embeddable_ids = fetch_embeddable_video_ids(&video_ids).await?;
+    if embeddable_ids.contains(video_id) {
+        Ok(())
+    } else {
+        Err(unplayable_video_message())
+    }
 }
 
 /// Cache TTL in seconds (30 minutes)
@@ -113,7 +239,11 @@ pub async fn search_youtube(query: &str, limit: u32) -> Result<Vec<SearchResult>
     // Check cache first
     if let Some(results) = get_cached(&cache_key) {
         log::info!("[YouTube] Cache hit for: {}", karaoke_query);
-        return Ok(results);
+        let video_ids = results.iter().map(|result| result.id.clone()).collect::<Vec<_>>();
+        let embeddable_ids = fetch_embeddable_video_ids(&video_ids).await?;
+        let filtered_results = filter_results_by_embeddable(results, &embeddable_ids);
+        store_cached(cache_key, filtered_results.clone());
+        return Ok(filtered_results);
     }
 
     log::info!("[YouTube] Cache miss, searching with rusty_ytdl for: {}", karaoke_query);
@@ -153,7 +283,7 @@ pub async fn search_youtube(query: &str, limit: u32) -> Result<Vec<SearchResult>
                         format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", id)
                     });
 
-                let url = format!("https://www.youtube.com/watch?v={}", id);
+                let url = format!("https://youtu.be/{}", id);
 
                 results.push(SearchResult {
                     id,
@@ -169,7 +299,14 @@ pub async fn search_youtube(query: &str, limit: u32) -> Result<Vec<SearchResult>
         }
     }
 
-    log::info!("[YouTube] Found {} results via rusty_ytdl, caching...", results.len());
+    let video_ids = results.iter().map(|result| result.id.clone()).collect::<Vec<_>>();
+    let embeddable_ids = fetch_embeddable_video_ids(&video_ids).await?;
+    let results = filter_results_by_embeddable(results, &embeddable_ids);
+
+    log::info!(
+        "[YouTube] Found {} embeddable results via rusty_ytdl, caching...",
+        results.len()
+    );
 
     store_cached(cache_key, results.clone());
 
@@ -211,6 +348,67 @@ mod tests {
             thumbnail: "".to_string(),
             url: "".to_string(),
         }
+    }
+
+    #[test]
+    fn test_filter_results_keeps_embeddable_videos() {
+        let mut embeddable_ids = HashSet::new();
+        embeddable_ids.insert("ok-video".to_string());
+
+        let filtered = filter_results_by_embeddable(
+            vec![dummy_result("ok-video"), dummy_result("blocked-video")],
+            &embeddable_ids,
+        );
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "ok-video");
+    }
+
+    #[test]
+    fn test_filter_results_removes_non_embeddable_videos() {
+        let embeddable_ids = HashSet::new();
+
+        let filtered = filter_results_by_embeddable(vec![dummy_result("blocked-video")], &embeddable_ids);
+
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn test_filter_results_removes_missing_video_ids() {
+        let mut embeddable_ids = HashSet::new();
+        embeddable_ids.insert("other-video".to_string());
+
+        let filtered = filter_results_by_embeddable(vec![dummy_result("missing-video")], &embeddable_ids);
+
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn test_embeddable_ids_from_response_only_accepts_true_status() {
+        let embeddable_ids = embeddable_ids_from_response(VideosListResponse {
+            items: vec![
+                VideoStatusItem {
+                    id: "ok-video".to_string(),
+                    status: VideoStatus {
+                        embeddable: Some(true),
+                    },
+                },
+                VideoStatusItem {
+                    id: "blocked-video".to_string(),
+                    status: VideoStatus {
+                        embeddable: Some(false),
+                    },
+                },
+                VideoStatusItem {
+                    id: "unknown-video".to_string(),
+                    status: VideoStatus { embeddable: None },
+                },
+            ],
+        });
+
+        assert!(embeddable_ids.contains("ok-video"));
+        assert!(!embeddable_ids.contains("blocked-video"));
+        assert!(!embeddable_ids.contains("unknown-video"));
     }
 
     #[test]

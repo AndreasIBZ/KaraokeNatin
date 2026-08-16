@@ -182,6 +182,7 @@ pub async fn process_command(
         ClientCommand::ADD_SONG { youtube_url, added_by } => {
             let youtube_id = extract_youtube_id(&youtube_url)
                 .ok_or_else(|| "Invalid YouTube URL".to_string())?;
+            crate::youtube::ensure_video_is_embeddable(&youtube_id).await?;
             
             match crate::metadata::fetch_metadata(&youtube_id).await {
                 Ok(metadata) => {
@@ -195,7 +196,8 @@ pub async fn process_command(
                         added_by: added_by.unwrap_or_else(|| "Guest".to_string()),
                         added_at: chrono::Utc::now().timestamp_millis(),
                     };
-                    state.write().add_song(song);
+                    let mut room_state = state.write();
+                    queue_song_if_embeddable(&mut room_state, song, true)?;
                 }
                 Err(e) => {
                     log::error!("Failed to fetch metadata: {}", e);
@@ -271,7 +273,9 @@ pub async fn process_command(
         }
         ClientCommand::PLAYLIST_TO_QUEUE { song_id, collection_id } => {
             if let Some(song) = playlists.clone_song_for_queue(&collection_id, &song_id) {
-                state.write().add_song(song);
+                crate::youtube::ensure_video_is_embeddable(&song.youtube_id).await?;
+                let mut room_state = state.write();
+                queue_song_if_embeddable(&mut room_state, song, true)?;
             } else {
                 return Err("Song not found in collection".to_string());
             }
@@ -307,6 +311,18 @@ pub async fn process_command(
     
     emit_state(&app, &state)?;
 
+    Ok(())
+}
+
+fn queue_song_if_embeddable(
+    room_state: &mut crate::room_state::RoomState,
+    song: Song,
+    is_embeddable: bool,
+) -> Result<(), String> {
+    if !is_embeddable {
+        return Err(crate::youtube::unplayable_video_message());
+    }
+    room_state.add_song(song);
     Ok(())
 }
 
@@ -815,6 +831,53 @@ fn extract_youtube_id(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dummy_song(id: &str, youtube_id: &str) -> Song {
+        Song {
+            id: id.to_string(),
+            youtube_id: youtube_id.to_string(),
+            title: format!("title-{id}"),
+            artist: "artist".to_string(),
+            duration: 180,
+            thumbnail_url: "thumb.jpg".to_string(),
+            added_by: "Guest".to_string(),
+            added_at: 1,
+        }
+    }
+
+    fn room_state_with_current_song() -> crate::room_state::RoomState {
+        let mut room_state = crate::room_state::RoomState::new(
+            "room".to_string(),
+            "host".to_string(),
+            Vec::new(),
+        );
+        room_state.player.current_song = Some(dummy_song("current", "currentid"));
+        room_state
+    }
+
+    #[test]
+    fn test_queue_song_if_embeddable_adds_to_queue() {
+        let mut room_state = room_state_with_current_song();
+        let before_len = room_state.queue.len();
+
+        queue_song_if_embeddable(&mut room_state, dummy_song("next", "abc123"), true)
+            .expect("embeddable song should enter the queue");
+
+        assert_eq!(room_state.queue.len(), before_len + 1);
+        assert_eq!(room_state.queue[0].youtube_id, "abc123");
+    }
+
+    #[test]
+    fn test_queue_song_if_not_embeddable_leaves_queue_unchanged() {
+        let mut room_state = room_state_with_current_song();
+        let before_len = room_state.queue.len();
+
+        let result = queue_song_if_embeddable(&mut room_state, dummy_song("bad", "blockedid"), false);
+
+        assert_eq!(result, Err(crate::youtube::unplayable_video_message()));
+        assert_eq!(room_state.queue.len(), before_len);
+        assert!(room_state.queue.iter().all(|song| song.youtube_id != "blockedid"));
+    }
 
     #[test]
     fn test_extract_youtube_id() {

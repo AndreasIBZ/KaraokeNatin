@@ -879,6 +879,7 @@ body {
 }
 
 .queue-item-compact {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -957,6 +958,15 @@ body {
 .queue-action-btn-danger:hover:not(:disabled) {
   background: rgba(224, 36, 94, 0.15);
   color: var(--danger);
+}
+
+.queue-copy-feedback {
+  position: absolute;
+  right: 10px;
+  bottom: 2px;
+  font-size: 10px;
+  color: var(--success);
+  pointer-events: none;
 }
 
 /* ===== Guest InApp Remote (iframe in main area) ===== */

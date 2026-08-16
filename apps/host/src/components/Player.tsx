@@ -189,6 +189,7 @@ const Player = () => {
             events: {
                 onReady: handlePlayerReady,
                 onStateChange: handlePlayerStateChange,
+                onError: handlePlayerError,
             },
         }) as unknown as YouTubePlayer;
 
@@ -249,8 +250,22 @@ const Player = () => {
         updatePlayerState(status);
     };
 
+    function handlePlayerError(event: any) {
+        const errorCode = Number(event?.data);
+        console.warn('[Player] YouTube playback error:', errorCode);
+        void updatePlayerState('error');
+
+        if ([100, 101, 150].includes(errorCode)) {
+            void invoke('process_command', {
+                command: { type: 'SKIP' },
+            }).catch((error) => {
+                console.error('[Player] Failed to skip after YouTube error:', error);
+            });
+        }
+    }
+
     // Update player state in Rust backend
-    const updatePlayerState = async (status?: string, currentTime?: number, duration?: number) => {
+    async function updatePlayerState(status?: string, currentTime?: number, duration?: number) {
         try {
             await invoke('update_player_state', {
                 status: status || undefined,
@@ -260,7 +275,7 @@ const Player = () => {
         } catch (error) {
             console.error('[Player] Failed to update player state:', error);
         }
-    };
+    }
 
     // Poll current time - throttle broadcasts to reduce network traffic
     const startTimePolling = () => {
