@@ -2792,10 +2792,22 @@ body {
   font-size: 18px;
 }
 
+.playlist-import-title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 800;
+}
+
 .playlist-import-header p {
   margin: 4px 0 0;
   color: var(--text-secondary);
   font-size: 12px;
+}
+
+.playlist-import-body {
+  display: grid;
+  gap: 12px;
 }
 
 .playlist-import-drop {
@@ -2842,6 +2854,13 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
   cursor: pointer;
 }
 
@@ -2855,6 +2874,37 @@ body {
 .playlist-import-preview h3 {
   margin: 4px 0;
   font-size: 20px;
+}
+
+.playlist-import-url {
+  display: grid;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.playlist-import-url-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.playlist-import-url-row input {
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.playlist-import-divider,
+.playlist-import-status,
+.playlist-import-note {
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
 .playlist-import-preview p,

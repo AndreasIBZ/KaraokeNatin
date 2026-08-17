@@ -8,6 +8,9 @@ export interface Song {
     title: string;
     artist: string;
     duration: number;       // seconds
+    originalTitle?: string | null;
+    originalArtist?: string | null;
+    originalDuration?: number | null;
     thumbnailUrl: string;
     addedBy: string;        // clientId
     addedAt: number;        // timestamp

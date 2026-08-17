@@ -50,6 +50,12 @@ pub struct Song {
     pub artist: String,
     #[serde(default)]
     pub duration: u32,
+    #[serde(default, rename = "originalTitle")]
+    pub original_title: Option<String>,
+    #[serde(default, rename = "originalArtist")]
+    pub original_artist: Option<String>,
+    #[serde(default, rename = "originalDuration")]
+    pub original_duration: Option<u32>,
     #[serde(rename = "thumbnailUrl")]
     #[serde(default)]
     pub thumbnail_url: String,
@@ -104,6 +110,28 @@ pub enum PlaylistSource {
         #[serde(rename = "importedAt")]
         imported_at: i64,
     },
+}
+
+impl Song {
+    pub fn original_title_or_current(&self) -> String {
+        self.original_title
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| self.title.clone())
+    }
+
+    pub fn original_artist_or_current(&self) -> String {
+        self.original_artist
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| self.artist.clone())
+    }
+
+    pub fn original_duration_or_current(&self) -> u32 {
+        self.original_duration.unwrap_or(self.duration)
+    }
 }
 
 /// Collection visibility
@@ -422,6 +450,15 @@ impl PlaylistStore {
         success
     }
 
+    pub fn clone_song_from_collection(&self, collection_id: &str, song_id: &str) -> Option<Song> {
+        self.playlists
+            .read()
+            .iter()
+            .find(|c| c.id == collection_id)
+            .and_then(|c| c.songs.iter().find(|s| s.id == song_id))
+            .cloned()
+    }
+
     pub fn move_songs_to_collection(&self, source_collection_id: &str, target_collection_id: &str, song_ids: &[String]) -> bool {
         if source_collection_id == target_collection_id || song_ids.is_empty() {
             return true;
@@ -483,12 +520,42 @@ impl PlaylistStore {
                 title: song.title.clone(),
                 artist: song.artist.clone(),
                 duration: song.duration,
+                original_title: song.original_title.clone(),
+                original_artist: song.original_artist.clone(),
+                original_duration: song.original_duration,
                 thumbnail_url: song.thumbnail_url.clone(),
                 added_by: song.added_by.clone(),
                 added_at: chrono::Utc::now().timestamp_millis(),
                 resolution_status: Some(ResolutionStatus::Resolved),
                 source: song.source.clone(),
             })
+    }
+
+    pub fn clone_collection_for_queue(&self, collection_id: &str, added_by: &str) -> Option<Vec<Song>> {
+        let pl = self.playlists.read();
+        let collection = pl.iter().find(|c| c.id == collection_id)?;
+        let now = chrono::Utc::now().timestamp_millis();
+        let songs = collection
+            .songs
+            .iter()
+            .filter(|song| !song.youtube_id.is_empty())
+            .map(|song| Song {
+                id: uuid::Uuid::new_v4().to_string(),
+                youtube_id: song.youtube_id.clone(),
+                title: song.title.clone(),
+                artist: song.artist.clone(),
+                duration: song.duration,
+                original_title: song.original_title.clone(),
+                original_artist: song.original_artist.clone(),
+                original_duration: song.original_duration,
+                thumbnail_url: song.thumbnail_url.clone(),
+                added_by: added_by.to_string(),
+                added_at: now,
+                resolution_status: Some(ResolutionStatus::Resolved),
+                source: song.source.clone(),
+            })
+            .collect();
+        Some(songs)
     }
 
     /// Get the default collection ID, creating one if none exist
@@ -1130,6 +1197,9 @@ mod tests {
             title: "Song".to_string(),
             artist: "Artist".to_string(),
             duration: 180,
+            original_title: None,
+            original_artist: None,
+            original_duration: None,
             thumbnail_url: "thumb.jpg".to_string(),
             added_by: "Singer".to_string(),
             added_at: 0,
@@ -1221,6 +1291,9 @@ mod tests {
             title: "Unresolved".to_string(),
             artist: "Artist".to_string(),
             duration: 0,
+            original_title: Some("Unresolved".to_string()),
+            original_artist: Some("Artist".to_string()),
+            original_duration: Some(0),
             thumbnail_url: String::new(),
             added_by: "Import".to_string(),
             added_at: 10,

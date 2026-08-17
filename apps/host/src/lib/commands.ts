@@ -154,6 +154,10 @@ export async function playlistResolveSong(
     return await invoke('playlist_resolve_song', { collectionId, songId, result });
 }
 
+export async function playlistQueueCollection(collectionId: string, addedBy?: string): Promise<number> {
+    return await invoke('playlist_queue_collection', { collectionId, addedBy });
+}
+
 export async function playlistMoveSongs(
     sourceCollectionId: string,
     targetCollectionId: string,

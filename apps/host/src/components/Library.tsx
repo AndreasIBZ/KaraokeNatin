@@ -11,6 +11,7 @@ import {
     playlistAddSong,
     playlistRemoveSong,
     playlistResolveSong,
+    playlistQueueCollection,
     playlistMoveSongs,
     saveCollectionToFile,
     previewSpotifyPlaylistImport,
@@ -49,6 +50,25 @@ interface PlaylistSongRowProps {
     onApplySuggestion: (song: Song) => void;
 }
 
+function originalSongTitle(song: Song) {
+    return song.originalTitle?.trim() || song.title;
+}
+
+function originalSongArtist(song: Song) {
+    return song.originalArtist?.trim() || song.artist;
+}
+
+function originalSongDuration(song: Song) {
+    return song.originalDuration ?? song.duration;
+}
+
+function formatSongDuration(seconds: number) {
+    if (!Number.isFinite(seconds) || seconds <= 0) return '';
+    const minutes = Math.floor(seconds / 60);
+    const remainder = Math.floor(seconds % 60);
+    return `${minutes}:${String(remainder).padStart(2, '0')}`;
+}
+
 function PlaylistSongRow({
     song,
     index,
@@ -64,6 +84,8 @@ function PlaylistSongRow({
 }: PlaylistSongRowProps) {
     const isUnresolved = !song.youtubeId || song.resolutionStatus === 'UNRESOLVED';
     const selectedSuggestion = suggestions.find((suggestion) => suggestion.id === selectedSuggestionId) || suggestions[0];
+    const resolveLabel = isUnresolved ? 'Resolve' : 'Re-resolve';
+    const duration = formatSongDuration(originalSongDuration(song));
     return (
         <div className="playlist-item">
             <input
@@ -80,42 +102,44 @@ function PlaylistSongRow({
                 <div className="playlist-thumb playlist-thumb-empty"><Music size={16} /></div>
             )}
             <div className="playlist-info">
-                <div className="playlist-title">{song.title}</div>
-                <div className="playlist-meta">{song.artist}{isUnresolved ? ' • unresolved' : ''}</div>
+                <div className="playlist-title">{originalSongTitle(song)}</div>
+                <div className="playlist-meta">
+                    {originalSongArtist(song)}
+                    {duration ? ` • ${duration}` : ''}
+                    {isUnresolved ? ' • unresolved' : ' • resolved'}
+                </div>
             </div>
-            {isUnresolved && (
-                suggestions.length > 0 ? (
-                    <div className="playlist-resolve-picker">
-                        <select
-                            value={selectedSuggestion?.id || ''}
-                            onChange={(event) => onSuggestionChange(song.id, event.target.value)}
-                            title="Choose YouTube match"
-                        >
-                            {suggestions.map((suggestion) => (
-                                <option value={suggestion.id} key={suggestion.id}>
-                                    {suggestion.title} - {suggestion.channel}
-                                </option>
-                            ))}
-                        </select>
-                        <button
-                            className="playlist-resolve-btn"
-                            onClick={() => onApplySuggestion(song)}
-                            disabled={!selectedSuggestion}
-                            title="Replace this playlist entry"
-                        >
-                            Apply
-                        </button>
-                    </div>
-                ) : (
+            {suggestions.length > 0 ? (
+                <div className="playlist-resolve-picker">
+                    <select
+                        value={selectedSuggestion?.id || ''}
+                        onChange={(event) => onSuggestionChange(song.id, event.target.value)}
+                        title="Choose YouTube match"
+                    >
+                        {suggestions.map((suggestion) => (
+                            <option value={suggestion.id} key={suggestion.id}>
+                                {suggestion.title} - {suggestion.channel}
+                            </option>
+                        ))}
+                    </select>
                     <button
                         className="playlist-resolve-btn"
-                        onClick={() => onResolve(song)}
-                        disabled={resolving}
-                        title="Find YouTube matches"
+                        onClick={() => onApplySuggestion(song)}
+                        disabled={!selectedSuggestion}
+                        title="Replace this playlist entry"
                     >
-                        {resolving ? 'Resolving...' : 'Resolve'}
+                        Apply
                     </button>
-                )
+                </div>
+            ) : (
+                <button
+                    className="playlist-resolve-btn"
+                    onClick={() => onResolve(song)}
+                    disabled={resolving}
+                    title={isUnresolved ? 'Find YouTube matches' : 'Find a better YouTube match'}
+                >
+                    {resolving ? 'Resolving...' : resolveLabel}
+                </button>
             )}
             <button
                 className="playlist-remove-btn"
@@ -156,7 +180,7 @@ function normalizeMatchText(value: string) {
 }
 
 function matchScore(song: Song, result: YouTubeSearchResult) {
-    const wanted = normalizeMatchText(`${song.title} ${song.artist}`);
+    const wanted = normalizeMatchText(`${originalSongTitle(song)} ${originalSongArtist(song)}`);
     const candidate = normalizeMatchText(`${result.title} ${result.channel}`);
     if (!wanted || !candidate) return 0;
     const words = wanted.split(' ').filter((word) => word.length > 2);
@@ -188,6 +212,7 @@ export default function Library({ onBack }: LibraryProps) {
     const [selectedSuggestions, setSelectedSuggestions] = useState<Record<string, string>>({});
     const [resolvingSongIds, setResolvingSongIds] = useState<Set<string>>(new Set());
     const [bulkMoveTargetId, setBulkMoveTargetId] = useState('');
+    const [queueingCollection, setQueueingCollection] = useState(false);
 
     // Collection management
     const [newCollectionName, setNewCollectionName] = useState('');
@@ -259,7 +284,7 @@ export default function Library({ onBack }: LibraryProps) {
     };
 
     const searchResolutionCandidates = useCallback(async (song: Song) => {
-        const query = [song.title, song.artist].filter(Boolean).join(' ');
+        const query = [originalSongTitle(song), originalSongArtist(song)].filter(Boolean).join(' ');
         if (!query.trim()) return;
         setResolvingSongIds((prev) => new Set(prev).add(song.id));
         try {
@@ -519,7 +544,8 @@ export default function Library({ onBack }: LibraryProps) {
     const visibleSongIds = visibleSongs.map((song) => song.id);
     const selectedVisibleCount = visibleSongIds.filter((id) => selectedSongIds.has(id)).length;
     const selectedSongs = activeCollection?.songs.filter((song) => selectedSongIds.has(song.id)) || [];
-    const selectedUnresolvedSongs = selectedSongs.filter((song) => !song.youtubeId || song.resolutionStatus === 'UNRESOLVED');
+    const selectedResolvableSongs = selectedSongs;
+    const resolvedSongCount = activeCollection?.songs.filter((song) => song.youtubeId && song.resolutionStatus !== 'UNRESOLVED').length || 0;
 
     const handleSelectSong = (songId: string, value: boolean) => {
         setSelectedSongIds((prev) => {
@@ -548,7 +574,7 @@ export default function Library({ onBack }: LibraryProps) {
     };
 
     const handleBulkResolve = async () => {
-        for (const song of selectedUnresolvedSongs) {
+        for (const song of selectedResolvableSongs) {
             if (!resolutionSuggestions[song.id]?.length) {
                 await searchResolutionCandidates(song);
             }
@@ -556,7 +582,7 @@ export default function Library({ onBack }: LibraryProps) {
     };
 
     const handleApplySelectedResolutions = async () => {
-        for (const song of selectedUnresolvedSongs) {
+        for (const song of selectedResolvableSongs) {
             if (resolutionSuggestions[song.id]?.length) {
                 await applyResolutionSuggestion(song);
             }
@@ -583,6 +609,20 @@ export default function Library({ onBack }: LibraryProps) {
         } catch (error) {
             console.error('[Library] Move songs failed:', error);
             alert(typeof error === 'string' ? error : 'Failed to move songs');
+        }
+    };
+
+    const handleQueueActiveCollection = async () => {
+        if (!activeCollectionId || resolvedSongCount === 0) return;
+        setQueueingCollection(true);
+        try {
+            const count = await playlistQueueCollection(activeCollectionId, 'Host');
+            alert(`${count} canciones encoladas.`);
+        } catch (error) {
+            console.error('[Library] Queue playlist failed:', error);
+            alert(typeof error === 'string' ? error : 'No se pudo encolar la playlist');
+        } finally {
+            setQueueingCollection(false);
         }
     };
 
@@ -955,6 +995,14 @@ export default function Library({ onBack }: LibraryProps) {
                             </label>
                             <button
                                 className="btn-sm btn-secondary"
+                                onClick={handleQueueActiveCollection}
+                                disabled={queueingCollection || resolvedSongCount === 0}
+                                title="Queue resolved songs in playlist order"
+                            >
+                                <Plus size={13} /> {queueingCollection ? 'Queueing...' : `Queue ${resolvedSongCount}`}
+                            </button>
+                            <button
+                                className="btn-sm btn-secondary"
                                 onClick={() => handleToggleVisibility(activeCollection)}
                                 title={activeCollection.visibility === 'public' ? 'Make personal' : 'Make public'}
                             >
@@ -1013,10 +1061,10 @@ export default function Library({ onBack }: LibraryProps) {
                                     />
                                     <span>Select visible ({selectedVisibleCount}/{visibleSongs.length})</span>
                                 </label>
-                                <button className="btn-sm btn-secondary" onClick={handleBulkResolve} disabled={selectedUnresolvedSongs.length === 0}>
-                                    Resolver seleccionadas
+                                <button className="btn-sm btn-secondary" onClick={handleBulkResolve} disabled={selectedResolvableSongs.length === 0}>
+                                    Resolver/Re-resolver
                                 </button>
-                                <button className="btn-sm btn-primary" onClick={handleApplySelectedResolutions} disabled={selectedUnresolvedSongs.every((song) => !resolutionSuggestions[song.id]?.length)}>
+                                <button className="btn-sm btn-primary" onClick={handleApplySelectedResolutions} disabled={selectedResolvableSongs.every((song) => !resolutionSuggestions[song.id]?.length)}>
                                     Aplicar propuestas
                                 </button>
                                 <select

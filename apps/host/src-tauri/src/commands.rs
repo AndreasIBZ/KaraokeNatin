@@ -189,6 +189,9 @@ pub async fn queue_search_result(
         title: result.title,
         artist: result.channel,
         duration: parse_duration_label(&result.duration),
+        original_title: None,
+        original_artist: None,
+        original_duration: None,
         thumbnail_url: result.thumbnail,
         added_by: added_by.unwrap_or_else(|| "Host".to_string()),
         added_at: chrono::Utc::now().timestamp_millis(),
@@ -252,6 +255,9 @@ pub async fn process_command(
                         title: metadata.title,
                         artist: metadata.artist,
                         duration: metadata.duration,
+                        original_title: None,
+                        original_artist: None,
+                        original_duration: None,
                         thumbnail_url: metadata.thumbnail_url,
                         added_by: added_by.unwrap_or_else(|| "Guest".to_string()),
                         added_at: chrono::Utc::now().timestamp_millis(),
@@ -310,6 +316,9 @@ pub async fn process_command(
                         title: metadata.title,
                         artist: metadata.artist,
                         duration: metadata.duration,
+                        original_title: None,
+                        original_artist: None,
+                        original_duration: None,
                         thumbnail_url: metadata.thumbnail_url,
                         added_by: added_by.unwrap_or_else(|| "Guest".to_string()),
                         added_at: chrono::Utc::now().timestamp_millis(),
@@ -696,6 +705,9 @@ pub async fn playlist_add_song(
         title: metadata.title,
         artist: metadata.artist,
         duration: metadata.duration,
+        original_title: None,
+        original_artist: None,
+        original_duration: None,
         thumbnail_url: metadata.thumbnail_url,
         added_by: added_by.unwrap_or_else(|| "Host".to_string()),
         added_at: chrono::Utc::now().timestamp_millis(),
@@ -752,15 +764,24 @@ pub async fn playlist_resolve_song(
     app: AppHandle,
 ) -> Result<(), String> {
     crate::youtube::ensure_video_is_embeddable(&result.id).await?;
+    let existing = playlists
+        .clone_song_from_collection(&collection_id, &song_id)
+        .ok_or_else(|| "Song not found in collection".to_string())?;
+    let original_title = Some(existing.original_title_or_current());
+    let original_artist = Some(existing.original_artist_or_current());
+    let original_duration = Some(existing.original_duration_or_current());
     let song = Song {
         id: song_id.clone(),
         youtube_id: result.id.clone(),
-        title: result.title,
-        artist: result.channel,
-        duration: parse_duration_label(&result.duration),
+        title: original_title.clone().unwrap_or(result.title),
+        artist: original_artist.clone().unwrap_or(result.channel),
+        duration: original_duration.unwrap_or_else(|| parse_duration_label(&result.duration)),
+        original_title,
+        original_artist,
+        original_duration,
         thumbnail_url: result.thumbnail,
-        added_by: "Resolve".to_string(),
-        added_at: chrono::Utc::now().timestamp_millis(),
+        added_by: existing.added_by,
+        added_at: existing.added_at,
         resolution_status: Some(ResolutionStatus::Resolved),
         source: Some(SongSource::Youtube {
             video_id: Some(result.id),
@@ -773,6 +794,33 @@ pub async fn playlist_resolve_song(
     state.write().sync_playlists(playlists.get_all());
     emit_state(&app, &state)?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn playlist_queue_collection(
+    collection_id: String,
+    added_by: Option<String>,
+    playlists: tauri::State<PlaylistStore>,
+    state: tauri::State<RoomStateManager>,
+    history: tauri::State<SessionHistoryStore>,
+    app: AppHandle,
+) -> Result<usize, String> {
+    let added_by = added_by.unwrap_or_else(|| "Host".to_string());
+    let songs = playlists
+        .clone_collection_for_queue(&collection_id, &added_by)
+        .ok_or_else(|| "Collection not found".to_string())?;
+    if songs.is_empty() {
+        return Err("No hay canciones resueltas para encolar.".to_string());
+    }
+    {
+        let mut room_state = state.write();
+        for song in &songs {
+            room_state.add_song(song.clone());
+            history.record_song(song);
+        }
+    }
+    emit_state(&app, &state)?;
+    Ok(songs.len())
 }
 
 #[tauri::command]
@@ -1240,6 +1288,9 @@ mod tests {
             title: format!("title-{id}"),
             artist: "artist".to_string(),
             duration: 180,
+            original_title: None,
+            original_artist: None,
+            original_duration: None,
             thumbnail_url: "thumb.jpg".to_string(),
             added_by: "Guest".to_string(),
             added_at: 1,

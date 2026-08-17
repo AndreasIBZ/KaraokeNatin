@@ -170,6 +170,7 @@ pub fn run() {
             commands::playlist_add_song,
             commands::playlist_remove_song,
             commands::playlist_resolve_song,
+            commands::playlist_queue_collection,
             commands::playlist_move_songs,
             commands::playlist_import_collection,
             commands::preview_spotify_playlist_import,
