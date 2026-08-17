@@ -6,16 +6,36 @@ import QRDisplay from './QRDisplay';
 import Queue from './Queue';
 import { Song, PlaylistCollection } from '../hooks/useRoomState';
 import { setHostInputFocused } from '../hooks/useRoomState';
-import { saveCollectionToFile, loadCollectionFromFile, getPlaylists, playlistAddSong, playlistCreateCollection, playlistDeleteCollection, playlistRenameCollection, playlistSetVisibility, playlistRemoveSong } from '../lib/commands';
+import {
+    saveCollectionToFile,
+    loadCollectionFromFile,
+    getPlaylists,
+    playlistAddSong,
+    playlistCreateCollection,
+    playlistDeleteCollection,
+    playlistRenameCollection,
+    playlistSetVisibility,
+    playlistRemoveSong,
+    getAppSettingsInfo,
+    openDataFolder,
+    openSessionHistoryFolder,
+    openLogFolder,
+    openGithubRepository,
+    reportIssue,
+    type AppSettingsInfo,
+} from '../lib/commands';
+import type { ConnectedPeer, PendingPeer } from '../hooks/usePeerHost';
 import { addStatusReducer, initialAddStatusState } from './addStatusReducer';
 import {
-    ChevronLeft, ChevronRight, Users, Search, Plus, Sun, Moon,
-    Play, Pause, SkipForward, Music, Trash2, UserPlus,
-    Globe, Lock, Pencil, Upload, Download, ChevronDown, ArrowLeft, Star,
-    Volume2, VolumeX,
+    ChevronLeft, ChevronRight, Users, Search, Plus,
+    Play, Pause, SkipForward, Music, Trash2,
+    Globe, Lock, Pencil, Upload, Download, ChevronDown, Power, Star,
+    Volume2, VolumeX, UserCheck, UserX, X, MonitorUp, Maximize2,
+    Settings as SettingsIcon, FolderOpen, Github, Bug, Database, History,
 } from 'lucide-react';
 
 interface SearchResult {
+    id: string;
     url: string;
     title: string;
     channel: string;
@@ -29,12 +49,26 @@ interface ControlPanelProps {
     queue: Song[];
     playlists: PlaylistCollection[];
     connectedClients: number;
+    connectedClientList: ConnectedPeer[];
+    pendingClientList: PendingPeer[];
+    guestsCanInvite: boolean;
+    onGuestsCanInviteChange: (value: boolean) => void;
+    onClientCanReorderQueueChange: (clientId: string, value: boolean) => void;
+    onApproveClient: (clientId: string) => void;
+    onRejectClient: (clientId: string) => void;
+    onKickClient: (clientId: string) => void;
     isCollapsed: boolean;
     onToggle: () => void;
     onSearch: (query: string) => void;
+    karaokeOnly: boolean;
+    onKaraokeOnlyChange: (value: boolean) => void;
     searchResults: SearchResult[];
     searching: boolean;
     onAddToPlaylist: (url: string, collectionId: string) => Promise<void>;
+    playerDisplayOpen?: boolean;
+    onOpenPlayerDisplay?: () => Promise<void> | void;
+    onClosePlayerDisplay?: () => Promise<void> | void;
+    onFullscreenPlayerDisplay?: () => Promise<void> | void;
     isPlaying: boolean;
     currentSong: Song | null;
     /** Live player state, used by the transport controls. */
@@ -44,6 +78,7 @@ interface ControlPanelProps {
     duration?: number;
     isMobile?: boolean;
     onBack?: () => void;
+    showPanelSearch?: boolean;
 }
 
 /** mm:ss for the seek bar. Hours are not worth handling for karaoke tracks. */
@@ -141,7 +176,7 @@ const SearchResultRow = memo(function SearchResultRow({
     newCollectionName: string;
     showNewLibraryCollection: boolean;
     newLibraryCollectionName: string;
-    onAddToQueue: (url: string) => void;
+    onAddToQueue: (result: SearchResult) => void;
     onTogglePicker: (url: string) => void;
     onToggleLibraryPicker: (url: string) => void;
     onPickCollection: (url: string, collectionId: string) => void;
@@ -173,7 +208,7 @@ const SearchResultRow = memo(function SearchResultRow({
                     {/* Add to Queue button */}
                     <FocusableButton
                         className={`btn-sm ${isQueueAdded ? 'btn-success' : 'btn-primary'}`}
-                        onClick={() => onAddToQueue(result.url)}
+                        onClick={() => onAddToQueue(result)}
                         disabled={isQueueLoading}
                     >
                         {isQueueLoading ? (
@@ -383,12 +418,26 @@ const ControlPanel = ({
     queue,
     playlists,
     connectedClients,
+    connectedClientList,
+    pendingClientList,
+    guestsCanInvite,
+    onGuestsCanInviteChange,
+    onClientCanReorderQueueChange,
+    onApproveClient,
+    onRejectClient,
+    onKickClient,
     isCollapsed,
     onToggle,
     onSearch,
+    karaokeOnly,
+    onKaraokeOnlyChange,
     searchResults,
     searching,
     onAddToPlaylist,
+    playerDisplayOpen = false,
+    onOpenPlayerDisplay,
+    onClosePlayerDisplay,
+    onFullscreenPlayerDisplay,
     isPlaying,
     currentSong,
     volume = 80,
@@ -397,10 +446,14 @@ const ControlPanel = ({
     duration = 0,
     isMobile,
     onBack,
+    showPanelSearch = false,
 }: ControlPanelProps) => {
     const [searchQuery, setSearchQuery] = useState('');
-    const [theme, setTheme] = useState<'dark' | 'light'>('dark');
-    const [showInvite, setShowInvite] = useState(false);
+    const [theme, setTheme] = useState<'dark' | 'light'>(() => localStorage.getItem('festejar_theme') === 'light' ? 'light' : 'dark');
+    const [showSingersMenu, setShowSingersMenu] = useState(false);
+    const [showSettingsMenu, setShowSettingsMenu] = useState(false);
+    const [settingsInfo, setSettingsInfo] = useState<AppSettingsInfo | null>(null);
+    const [settingsError, setSettingsError] = useState<string | null>(null);
     // Per-result loading/success state for the three "add to…" actions.
     // Was six parallel useState<Set<string>> hooks; consolidated into one
     // reducer (see addStatusReducer.ts) so the near-identical
@@ -420,11 +473,17 @@ const ControlPanel = ({
     const [newLibraryCollectionName, setNewLibraryCollectionName] = useState('');
     // Active collection tab in playlist section
     const [activeCollectionId, setActiveCollectionId] = useState<string | null>(null);
+    const [displayAction, setDisplayAction] = useState<'fullscreen' | 'close'>('fullscreen');
     // Collection management
     const [renamingCollectionId, setRenamingCollectionId] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState('');
 
     const { ref, focusKey } = useFocusable();
+
+    useEffect(() => {
+        document.documentElement.classList.toggle('light', theme === 'light');
+        localStorage.setItem('festejar_theme', theme);
+    }, [theme]);
 
     const loadLocalPlaylists = useCallback(async () => {
         try {
@@ -439,6 +498,26 @@ const ControlPanel = ({
     useEffect(() => {
         loadLocalPlaylists();
     }, [loadLocalPlaylists]);
+
+    useEffect(() => {
+        if (!playerDisplayOpen) setDisplayAction('fullscreen');
+    }, [playerDisplayOpen]);
+
+    const loadSettingsInfo = useCallback(async () => {
+        try {
+            setSettingsError(null);
+            setSettingsInfo(await getAppSettingsInfo());
+        } catch (error) {
+            console.error('[ControlPanel] Failed to load settings info:', error);
+            setSettingsError(error instanceof Error ? error.message : String(error));
+        }
+    }, []);
+
+    useEffect(() => {
+        if (showSettingsMenu) {
+            void loadSettingsInfo();
+        }
+    }, [loadSettingsInfo, showSettingsMenu]);
 
     // Close picker on outside click
     useEffect(() => {
@@ -486,15 +565,35 @@ const ControlPanel = ({
     const shownVolume = pendingVolume ?? volume;
     const shownTime = pendingSeek ?? currentTime;
 
-    const toggleTheme = useCallback(() => {
-        setTheme(prev => {
-            const newTheme = prev === 'dark' ? 'light' : 'dark';
-            document.documentElement.classList.toggle('light', newTheme === 'light');
-            return newTheme;
-        });
+    const runSettingsAction = useCallback(async (action: () => Promise<void>) => {
+        try {
+            setSettingsError(null);
+            await action();
+        } catch (error) {
+            console.error('[ControlPanel] Settings action failed:', error);
+            setSettingsError(error instanceof Error ? error.message : String(error));
+        }
     }, []);
 
+    const handleHeaderDisplayAction = useCallback(async () => {
+        if (!playerDisplayOpen) {
+            await onOpenPlayerDisplay?.();
+            setDisplayAction('fullscreen');
+            return;
+        }
+
+        if (displayAction === 'fullscreen') {
+            await onFullscreenPlayerDisplay?.();
+            setDisplayAction('close');
+            return;
+        }
+
+        await onClosePlayerDisplay?.();
+        setDisplayAction('fullscreen');
+    }, [displayAction, onClosePlayerDisplay, onFullscreenPlayerDisplay, onOpenPlayerDisplay, playerDisplayOpen]);
+
     const handlePlayPause = useCallback(async () => {
+        if (!currentSong && queue.length === 0) return;
         try {
             await invoke('process_command', {
                 command: { type: isPlaying ? 'PAUSE' : 'PLAY' },
@@ -502,9 +601,10 @@ const ControlPanel = ({
         } catch (error) {
             console.error('[ControlPanel] Play/Pause failed:', error);
         }
-    }, [isPlaying]);
+    }, [currentSong, isPlaying, queue.length]);
 
     const handleSkip = useCallback(async () => {
+        if (!currentSong && queue.length === 0) return;
         try {
             await invoke('process_command', {
                 command: { type: 'SKIP' },
@@ -512,7 +612,7 @@ const ControlPanel = ({
         } catch (error) {
             console.error('[ControlPanel] Skip failed:', error);
         }
-    }, []);
+    }, [currentSong, queue.length]);
 
     // SET_VOLUME / TOGGLE_MUTE / SEEK have existed end to end in the protocol
     // and the Rust command enum since the start, with no UI to reach them.
@@ -547,13 +647,12 @@ const ControlPanel = ({
         }
     }, []);
 
-    const handleAddToQueue = useCallback(async (url: string) => {
+    const handleAddToQueue = useCallback(async (result: SearchResult) => {
+        const url = result.url;
         dispatchAddStatus({ type: 'START', target: 'queue', url });
         let success = false;
         try {
-            await invoke('process_command', {
-                command: { type: 'ADD_SONG', youtubeUrl: url, addedBy: 'Host' },
-            });
+            await invoke('queue_search_result', { result, addedBy: 'Host' });
             success = true;
         } catch (error) {
             console.error('[ControlPanel] Add to queue failed:', error);
@@ -753,47 +852,227 @@ const ControlPanel = ({
             {/* Panel */}
             <div ref={ref} className={`control-panel ${isCollapsed ? 'collapsed' : ''} ${isMobile ? 'control-panel-mobile' : ''}`}>
                 <div className="control-panel-header">
-                    <span className="control-panel-title">KaraokeNatin</span>
-                    <div style={{ display: 'flex', gap: '8px' }}>
+                    <div className="control-panel-header-actions">
+                        <FocusableButton
+                            className={`header-action-btn header-display-btn ${playerDisplayOpen ? 'active' : ''}`}
+                            onClick={handleHeaderDisplayAction}
+                            title={
+                                !playerDisplayOpen
+                                    ? 'Open player display'
+                                    : displayAction === 'fullscreen'
+                                        ? 'Fullscreen player display'
+                                        : 'Close player display'
+                            }
+                        >
+                            {!playerDisplayOpen ? (
+                                <MonitorUp size={17} />
+                            ) : displayAction === 'fullscreen' ? (
+                                <Maximize2 size={17} />
+                            ) : (
+                                <X size={17} />
+                            )}
+                        </FocusableButton>
+                        <div className="singers-menu-wrapper">
+                            <FocusableButton
+                                className={`header-action-btn header-menu-btn ${showSingersMenu ? 'active' : ''}`}
+                                onClick={() => {
+                                    setShowSingersMenu((open) => !open);
+                                    setShowSettingsMenu(false);
+                                }}
+                                title="Singers"
+                            >
+                                <Users size={16} />
+                                <span>Singers</span>
+                                {pendingClientList.length > 0 && (
+                                    <span className="header-menu-badge">{pendingClientList.length}</span>
+                                )}
+                            </FocusableButton>
+                            {showSingersMenu && (
+                                <div className="singers-menu">
+                                    <div className="singers-menu-header">
+                                        <div>
+                                            <div className="singers-menu-title">Singers</div>
+                                            <div className="singers-menu-subtitle">
+                                                {connectedClients} connected
+                                            </div>
+                                        </div>
+                                        <button className="singers-menu-close" onClick={() => setShowSingersMenu(false)} title="Close">
+                                            <X size={14} />
+                                        </button>
+                                    </div>
+
+                                    <QRDisplay url={connectionUrl} roomId={roomId ?? null} />
+
+                                    <label className="session-setting-row">
+                                        <input
+                                            type="checkbox"
+                                            checked={guestsCanInvite}
+                                            onChange={(e) => onGuestsCanInviteChange(e.target.checked)}
+                                        />
+                                        <span>Guests can invite friends</span>
+                                    </label>
+
+                                    {pendingClientList.length > 0 && (
+                                        <div className="waiting-room-list">
+                                            <div className="waiting-room-title">Waiting Room</div>
+                                            {pendingClientList.map((client) => (
+                                                <div className="waiting-room-user" key={client.id}>
+                                                    <div className="waiting-room-user-info">
+                                                        <span className="connected-user-name">{client.displayName}</span>
+                                                        {client.previouslyKicked && (
+                                                            <span className="waiting-room-note">Expulsado antes</span>
+                                                        )}
+                                                    </div>
+                                                    <button
+                                                        className="waiting-room-approve"
+                                                        onClick={() => onApproveClient(client.id)}
+                                                        title={`Approve ${client.displayName}`}
+                                                    >
+                                                        <UserCheck size={14} />
+                                                    </button>
+                                                    <button
+                                                        className="connected-user-kick"
+                                                        onClick={() => onRejectClient(client.id)}
+                                                        title={`Reject ${client.displayName}`}
+                                                    >
+                                                        <X size={14} />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+
+                                    {connectedClientList.length > 0 ? (
+                                        <div className="connected-users-list">
+                                            {connectedClientList.map((client) => (
+                                                <div className="connected-user" key={client.id}>
+                                                    <span className="connected-user-dot" />
+                                                    <span className="connected-user-name">{client.displayName}</span>
+                                                    <label
+                                                        className="connected-user-permission"
+                                                        title="Allow this singer to reorder the queue"
+                                                    >
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={client.canReorderQueue}
+                                                            onChange={(e) => onClientCanReorderQueueChange(client.id, e.target.checked)}
+                                                        />
+                                                        <span>Vice-KJ</span>
+                                                    </label>
+                                                    <button
+                                                        className="connected-user-kick"
+                                                        onClick={() => onKickClient(client.id)}
+                                                        title={`Disconnect ${client.displayName}`}
+                                                    >
+                                                        <UserX size={14} />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <div className="singers-menu-empty">No singers connected</div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                        <div className="settings-menu-wrapper">
+                            <FocusableButton
+                                className={`header-action-btn header-display-btn ${showSettingsMenu ? 'active' : ''}`}
+                                onClick={() => {
+                                    setShowSettingsMenu((open) => !open);
+                                    setShowSingersMenu(false);
+                                }}
+                                title="Settings"
+                            >
+                                <SettingsIcon size={17} />
+                            </FocusableButton>
+                            {showSettingsMenu && (
+                                <div className="settings-menu">
+                                    <div className="settings-menu-header">
+                                        <div>
+                                            <div className="settings-menu-title">Settings</div>
+                                            <div className="settings-menu-subtitle">
+                                                {settingsInfo ? `${settingsInfo.productName} ${settingsInfo.version}` : 'Loading...'}
+                                            </div>
+                                        </div>
+                                        <button className="singers-menu-close" onClick={() => setShowSettingsMenu(false)} title="Close">
+                                            <X size={14} />
+                                        </button>
+                                    </div>
+
+                                    <label className="settings-toggle-row">
+                                        <span className="settings-toggle-copy">
+                                            <span>Light mode</span>
+                                            <span>Theme is saved for this device</span>
+                                        </span>
+                                        <input
+                                            type="checkbox"
+                                            checked={theme === 'light'}
+                                            onChange={(e) => setTheme(e.target.checked ? 'light' : 'dark')}
+                                        />
+                                    </label>
+
+                                    <div className="settings-info-list">
+                                        <div className="settings-info-row">
+                                            <Database size={14} />
+                                            <div>
+                                                <span>Playlists</span>
+                                                <code>{settingsInfo?.playlistsPath || 'Not resolved yet'}</code>
+                                            </div>
+                                        </div>
+                                        <div className="settings-info-row">
+                                            <History size={14} />
+                                            <div>
+                                                <span>Session history</span>
+                                                <code>{settingsInfo?.sessionHistoryDir || 'Not resolved yet'}</code>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {settingsError && (
+                                        <div className="settings-error">{settingsError}</div>
+                                    )}
+
+                                    <div className="settings-actions-grid">
+                                        <button className="settings-action-btn" onClick={() => runSettingsAction(openDataFolder)}>
+                                            <FolderOpen size={14} /> Data
+                                        </button>
+                                        <button className="settings-action-btn" onClick={() => runSettingsAction(openSessionHistoryFolder)}>
+                                            <History size={14} /> Sessions
+                                        </button>
+                                        <button className="settings-action-btn" onClick={() => runSettingsAction(openLogFolder)}>
+                                            <FolderOpen size={14} /> Logs
+                                        </button>
+                                        <button className="settings-action-btn" onClick={() => runSettingsAction(openGithubRepository)}>
+                                            <Github size={14} /> GitHub
+                                        </button>
+                                        <button className="settings-action-btn" onClick={() => runSettingsAction(reportIssue)}>
+                                            <Bug size={14} /> Issue
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
                         {onBack && (
-                            <FocusableButton className="btn-icon" onClick={onBack} title="Back to mode selection">
-                                <ArrowLeft size={18} />
+                            <FocusableButton className="header-action-btn btn-icon" onClick={onBack} title="Exit host mode">
+                                <Power size={18} />
                             </FocusableButton>
                         )}
-                        <FocusableButton className="btn-icon" onClick={toggleTheme}>
-                            {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
-                        </FocusableButton>
                     </div>
                 </div>
 
                 <div className="control-panel-content">
-                    {/* Invite Section */}
-                    <div className="control-panel-section">
-                        <FocusableButton
-                            onClick={() => setShowInvite(!showInvite)}
-                            className="invite-btn"
-                            style={{
-                                background: showInvite ? 'var(--accent)' : 'var(--bg-tertiary)',
-                                color: showInvite ? 'white' : 'var(--text-primary)',
-                            }}
-                        >
-                            <UserPlus size={18} /> Invite Friends
-                        </FocusableButton>
-                        {showInvite && (
-                            <div style={{ marginTop: '12px' }}>
-                                <QRDisplay url={connectionUrl} roomId={roomId ?? null} />
-                            </div>
-                        )}
-                    </div>
-
                     {/* Player Controls */}
-                    <div className="control-panel-section">
+                    <div className="control-panel-section panel-primary-section">
                         <div className="section-label">Now Playing</div>
                         {currentSong ? (
                             <div className="now-playing-card">
                                 <div className="now-playing-title">{currentSong.title}</div>
                                 <div className="now-playing-artist">
                                     {currentSong.artist || 'Unknown Artist'}
+                                </div>
+                                <div className="now-playing-singer">
+                                    Queued by {currentSong.addedBy || 'Guest'}
                                 </div>
                             </div>
                         ) : (
@@ -804,6 +1083,7 @@ const ControlPanel = ({
                                 className="btn-icon btn-accent"
                                 onClick={handlePlayPause}
                                 title={isPlaying ? 'Pause' : 'Play'}
+                                disabled={!currentSong && queue.length === 0}
                             >
                                 {isPlaying ? <Pause size={20} /> : <Play size={20} />}
                             </FocusableButton>
@@ -811,6 +1091,7 @@ const ControlPanel = ({
                                 className="btn-icon"
                                 onClick={handleSkip}
                                 title="Skip"
+                                disabled={!currentSong && queue.length === 0}
                             >
                                 <SkipForward size={20} />
                             </FocusableButton>
@@ -868,16 +1149,8 @@ const ControlPanel = ({
                         </div>
                     </div>
 
-                    {/* Status */}
-                    <div className="control-panel-section">
-                        <div className="status-item">
-                            <Users size={16} />
-                            <span>{connectedClients} connected</span>
-                        </div>
-                    </div>
-
                     {/* Search Section */}
-                    <div className="control-panel-section">
+                    {showPanelSearch && <div className="control-panel-section">
                         <div className="section-label">Add Songs</div>
                         <form onSubmit={handleSearch} className="search-container">
                             <div className="search-row">
@@ -904,6 +1177,14 @@ const ControlPanel = ({
                                     <Search size={18} />
                                 </FocusableButton>
                             </div>
+                            <label className="search-mode-toggle">
+                                <input
+                                    type="checkbox"
+                                    checked={karaokeOnly}
+                                    onChange={(e) => onKaraokeOnlyChange(e.target.checked)}
+                                />
+                                <span>Solo versiones karaoke</span>
+                            </label>
                         </form>
 
                         {/* Search Results */}
@@ -951,10 +1232,10 @@ const ControlPanel = ({
                                 ))}
                             </div>
                         )}
-                    </div>
+                    </div>}
 
                     {/* Queue Section */}
-                    <div className="control-panel-section">
+                    <div className="control-panel-section panel-primary-section">
                         <div className="section-label">Queue ({queue.length})</div>
                         <Queue songs={queue} />
                     </div>

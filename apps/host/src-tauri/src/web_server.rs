@@ -4,7 +4,8 @@ use axum::{
     response::{Html, IntoResponse},
     http::StatusCode,
 };
-use tower_http::cors::{CorsLayer, Any};
+#[cfg(debug_assertions)]
+use tower_http::cors::{Any, CorsLayer};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;

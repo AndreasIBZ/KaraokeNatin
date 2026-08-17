@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { RoomState, Song, PlaylistCollection } from '@karaokenatin/shared';
 import { createRoom, getRoomState } from '../lib/commands';
@@ -27,20 +27,25 @@ let _flushCallback: ((state: RoomState) => void) | null = null;
 export function useRoomState() {
     const [roomState, setRoomState] = useState<RoomState | null>(null);
     const [loading, setLoading] = useState(true);
+    const roomStateRef = useRef<RoomState | null>(null);
+
+    const applyRoomState = useCallback((state: RoomState) => {
+        roomStateRef.current = state;
+        setRoomState(state);
+    }, []);
 
     // Register the flush callback
     useEffect(() => {
-        _flushCallback = setRoomState;
+        _flushCallback = applyRoomState;
         return () => { _flushCallback = null; };
-    }, []);
+    }, [applyRoomState]);
 
     const initializeRoom = async () => {
         try {
             // Create room in Rust backend
             await createRoom();
             // Fetch initial state
-            const state = await getRoomState();
-            setRoomState(state);
+            await refreshRoomState();
         } catch (error) {
             console.error('[useRoomState] Failed to initialize room:', error);
         } finally {
@@ -48,14 +53,20 @@ export function useRoomState() {
         }
     };
 
+    const refreshRoomState = useCallback(async () => {
+        const state = await getRoomState();
+        applyRoomState(state);
+        setLoading(false);
+    }, [applyRoomState]);
+
     useEffect(() => {
         // Subscribe to room state updates from Rust
         const unlisten = listen<RoomState>('room_state_updated', (event) => {
-            if (_isInputFocused) {
+            if (_isInputFocused && !hasTransportChange(roomStateRef.current, event.payload)) {
                 // Defer update to avoid re-rendering while user is typing
                 _pendingState = event.payload;
             } else {
-                setRoomState(event.payload);
+                applyRoomState(event.payload);
             }
         });
 
@@ -64,5 +75,21 @@ export function useRoomState() {
         };
     }, []);
 
-    return { roomState, loading, initializeRoom };
+    return { roomState, loading, initializeRoom, refreshRoomState };
+}
+
+function hasTransportChange(previous: RoomState | null, next: RoomState) {
+    if (!previous) return true;
+
+    const prevPlayer = previous.player;
+    const nextPlayer = next.player;
+
+    return (
+        prevPlayer.currentSong?.id !== nextPlayer.currentSong?.id ||
+        prevPlayer.status !== nextPlayer.status ||
+        prevPlayer.volume !== nextPlayer.volume ||
+        prevPlayer.isMuted !== nextPlayer.isMuted ||
+        Math.abs(prevPlayer.currentTime - nextPlayer.currentTime) > 2.5 ||
+        Math.abs(prevPlayer.duration - nextPlayer.duration) > 0.5
+    );
 }

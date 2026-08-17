@@ -21,7 +21,7 @@ export type ClientCommand =
     | { type: 'MOVE_SONG_DOWN'; songId: string }
     | { type: 'MOVE_SONG_TO_TOP'; songId: string }
     | { type: 'MOVE_SONG_TO_BOTTOM'; songId: string }
-    | { type: 'SET_DISPLAY_NAME'; name: string }
+    | { type: 'SET_DISPLAY_NAME'; name: string; clientKey?: string }
     | { type: 'PING' }
     // Collection management commands
     | { type: 'CREATE_COLLECTION'; name: string; visibility: CollectionVisibility }
@@ -42,7 +42,8 @@ export type ClientCommand =
  * protocol and belongs in this union — see `usePeerHost.ts` for the handler.
  */
 export type ClientRequest =
-    | { type: 'SEARCH'; query: string };
+    | { type: 'SEARCH'; query: string; karaokeOnly?: boolean }
+    | { type: 'ADD_SEARCH_RESULT'; result: SearchResult; addedBy?: string };
 
 /** Every message a client may send over the data channel. */
 export type ClientMessage = ClientCommand | ClientRequest;
@@ -55,16 +56,19 @@ export type HostBroadcast =
     | { type: 'STATE_PATCH'; patch: Partial<RoomState> }
     | { type: 'ERROR'; code: string; message: string }
     | { type: 'PONG'; serverTime: number }
+    | { type: 'WAITING_APPROVAL'; message?: string }
+    | { type: 'SESSION_SETTINGS'; guestsCanInvite: boolean; guestsCanReorderQueue: boolean }
+    | { type: 'DISCONNECT'; message?: string }
     | { type: 'SEARCH_RESULTS'; results: SearchResult[] };
 
 /** A single YouTube search result, as returned by the host's `search_youtube`. */
 export interface SearchResult {
     id: string;
     title: string;
-    artist?: string;
-    thumbnail?: string;
-    duration?: number;
-    url?: string;
+    channel: string;
+    duration: string;
+    thumbnail: string;
+    url: string;
 }
 
 /**
@@ -80,10 +84,11 @@ export const CLIENT_COMMAND_TYPES = [
     'IMPORT_COLLECTION'
 ] as const satisfies readonly ClientCommand['type'][];
 
-export const CLIENT_REQUEST_TYPES = ['SEARCH'] as const satisfies readonly ClientRequest['type'][];
+export const CLIENT_REQUEST_TYPES = ['SEARCH', 'ADD_SEARCH_RESULT'] as const satisfies readonly ClientRequest['type'][];
 
 export const HOST_BROADCAST_TYPES = [
-    'STATE_UPDATE', 'STATE_PATCH', 'ERROR', 'PONG', 'SEARCH_RESULTS'
+    'STATE_UPDATE', 'STATE_PATCH', 'ERROR', 'PONG', 'WAITING_APPROVAL',
+    'SESSION_SETTINGS', 'DISCONNECT', 'SEARCH_RESULTS'
 ] as const satisfies readonly HostBroadcast['type'][];
 
 /**

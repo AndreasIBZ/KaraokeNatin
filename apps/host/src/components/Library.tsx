@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { List, type RowComponentProps } from 'react-window';
-import { ArrowLeft, Sun, Moon, Search, Plus, Music, Trash2, Pencil, Globe, Lock, Upload, ChevronDown } from 'lucide-react';
+import { ArrowLeft, Sun, Moon, Search, Plus, Music, Trash2, Pencil, Globe, Lock, Upload, ChevronDown, X, FileJson } from 'lucide-react';
 import { PlaylistCollection, Song } from '../hooks/useRoomState';
 import {
     getPlaylists,
@@ -12,7 +12,10 @@ import {
     playlistAddSong,
     playlistRemoveSong,
     saveCollectionToFile,
-    loadCollectionFromFile
+    previewSpotifyPlaylistImport,
+    previewKaraokeJsonPlaylistImport,
+    confirmPlaylistImport,
+    type ImportPreview,
 } from '../lib/commands';
 import { setHostInputFocused } from '../hooks/useRoomState';
 
@@ -35,23 +38,39 @@ interface LibraryProps {
 // management screen, not a TV surface — so windowing carries none of the
 // spatial-navigation focus risk that keeps ControlPanel.tsx and Queue.tsx
 // unvirtualized. See REPOMAPPING.md / task.md T28 for that distinction.
-const PLAYLIST_ROW_HEIGHT = 46; // matches .playlist-item (padding + 30px thumb) + margin-bottom
+const PLAYLIST_ROW_HEIGHT = 54; // matches .playlist-item (padding + 30px thumb/meta) + margin-bottom
 const PLAYLIST_LIST_HEIGHT = 280; // matches the old .playlist-list max-height
 
 interface PlaylistRowData {
     songs: Song[];
     onRemove: (songId: string) => void;
+    onResolve: (song: Song) => void;
 }
 
-function PlaylistSongRow({ index, style, songs, onRemove }: RowComponentProps<PlaylistRowData>) {
+function PlaylistSongRow({ index, style, songs, onRemove, onResolve }: RowComponentProps<PlaylistRowData>) {
     const song = songs[index];
+    const isUnresolved = !song.youtubeId || song.resolutionStatus === 'UNRESOLVED';
     return (
         <div style={style} className="playlist-item">
             <span className="playlist-number">{index + 1}</span>
-            <img src={song.thumbnailUrl} alt="" loading="lazy" decoding="async" width={40} height={30} className="playlist-thumb" />
+            {song.thumbnailUrl ? (
+                <img src={song.thumbnailUrl} alt="" loading="lazy" decoding="async" width={40} height={30} className="playlist-thumb" />
+            ) : (
+                <div className="playlist-thumb playlist-thumb-empty"><Music size={16} /></div>
+            )}
             <div className="playlist-info">
                 <div className="playlist-title">{song.title}</div>
+                <div className="playlist-meta">{song.artist}{isUnresolved ? ' • unresolved' : ''}</div>
             </div>
+            {isUnresolved && (
+                <button
+                    className="playlist-resolve-btn"
+                    onClick={() => onResolve(song)}
+                    title="Resolve via YouTube search"
+                >
+                    Resolve
+                </button>
+            )}
             <button
                 className="playlist-remove-btn"
                 onClick={() => onRemove(song.id)}
@@ -61,6 +80,29 @@ function PlaylistSongRow({ index, style, songs, onRemove }: RowComponentProps<Pl
             </button>
         </div>
     );
+}
+
+function isSpotifyPlaylistUrl(value: string) {
+    try {
+        const url = new URL(value.trim());
+        const parts = url.pathname.split('/').filter(Boolean);
+        return url.protocol === 'https:' &&
+            url.hostname === 'open.spotify.com' &&
+            parts.length === 2 &&
+            parts[0] === 'playlist' &&
+            /^[A-Za-z0-9]+$/.test(parts[1]);
+    } catch {
+        return false;
+    }
+}
+
+async function readFileAsText(file: File) {
+    return await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+        reader.readAsText(file);
+    });
 }
 
 /**
@@ -75,6 +117,11 @@ export default function Library({ onBack }: LibraryProps) {
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
     const [searching, setSearching] = useState(false);
+    const [showImportModal, setShowImportModal] = useState(false);
+    const [importUrl, setImportUrl] = useState('');
+    const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+    const [importing, setImporting] = useState(false);
+    const [importError, setImportError] = useState<string | null>(null);
 
     // Collection management
     const [newCollectionName, setNewCollectionName] = useState('');
@@ -110,7 +157,11 @@ export default function Library({ onBack }: LibraryProps) {
 
     const handleSearch = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!searchQuery.trim()) return;
+        await runSearch(searchQuery.trim());
+    };
+
+    const runSearch = async (query: string) => {
+        if (!query.trim()) return;
 
         setSearching(true);
         setSearchResults([]);
@@ -118,7 +169,7 @@ export default function Library({ onBack }: LibraryProps) {
 
         try {
             const results = await invoke<SearchResult[]>('search_youtube', {
-                query: searchQuery.trim(),
+                query: query.trim(),
                 limit: 10
             });
             setSearchResults(results);
@@ -128,6 +179,13 @@ export default function Library({ onBack }: LibraryProps) {
             setSearching(false);
         }
     };
+
+    const handleResolveImportedSong = useCallback((song: Song) => {
+        const query = [song.title, song.artist].filter(Boolean).join(' ');
+        setSearchQuery(query);
+        void runSearch(query);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }, []);
 
     const handleCreateCollection = async () => {
         if (!newCollectionName.trim()) return;
@@ -245,13 +303,63 @@ export default function Library({ onBack }: LibraryProps) {
     };
 
     const handleLoadFromFile = async () => {
+        setShowImportModal(true);
+        setImportPreview(null);
+        setImportError(null);
+    };
+
+    const previewKaraokeFile = async (file: File) => {
+        if (!file.name.endsWith('.karaoke.json')) {
+            setImportError('Formato de importacion no reconocido.');
+            return;
+        }
+        setImporting(true);
+        setImportError(null);
         try {
-            await loadCollectionFromFile();
-            await loadCollections();
+            const text = await readFileAsText(file);
+            setImportPreview(await previewKaraokeJsonPlaylistImport(text));
         } catch (error) {
-            console.error('[Library] Load from file failed:', error);
-            if (typeof error === 'string' && error.includes('cancelled')) return;
-            alert('Failed to load file');
+            console.error('[Library] Karaoke JSON import preview failed:', error);
+            setImportError(typeof error === 'string' ? error : 'El archivo no es una playlist compatible con FESTEJAR.');
+        } finally {
+            setImporting(false);
+        }
+    };
+
+    const previewSpotifyUrl = async (url: string) => {
+        const cleanUrl = url.trim();
+        if (!isSpotifyPlaylistUrl(cleanUrl)) {
+            setImportError(cleanUrl ? 'No parece una URL de playlist de Spotify.' : 'Formato de importacion no reconocido.');
+            return;
+        }
+        setImporting(true);
+        setImportError(null);
+        try {
+            setImportPreview(await previewSpotifyPlaylistImport(cleanUrl));
+        } catch (error) {
+            console.error('[Library] Spotify import preview failed:', error);
+            setImportError(typeof error === 'string' ? error : 'No se pudo importar la playlist. Comprueba la conexion a Internet.');
+        } finally {
+            setImporting(false);
+        }
+    };
+
+    const handleConfirmImport = async (updateExisting = false) => {
+        if (!importPreview) return;
+        setImporting(true);
+        setImportError(null);
+        try {
+            const collectionId = await confirmPlaylistImport(importPreview.playlist, updateExisting);
+            await loadCollections();
+            setActiveCollectionId(collectionId);
+            setShowImportModal(false);
+            setImportPreview(null);
+            setImportUrl('');
+        } catch (error) {
+            console.error('[Library] Confirm import failed:', error);
+            setImportError(typeof error === 'string' ? error : 'Failed to import playlist');
+        } finally {
+            setImporting(false);
         }
     };
 
@@ -296,6 +404,132 @@ export default function Library({ onBack }: LibraryProps) {
             </div>
 
             <div className="library-content">
+                {showImportModal && (
+                    <div className="playlist-import-overlay" onClick={() => !importing && setShowImportModal(false)}>
+                        <div className="playlist-import-modal" onClick={(event) => event.stopPropagation()}>
+                            <div className="playlist-import-header">
+                                <div>
+                                    <h2>Import playlist</h2>
+                                    <p>*.karaoke.json or Spotify Playlist URL</p>
+                                </div>
+                                <button className="btn-icon" onClick={() => setShowImportModal(false)} disabled={importing} title="Close">
+                                    <X size={18} />
+                                </button>
+                            </div>
+
+                            {!importPreview ? (
+                                <>
+                                    <div
+                                        className="playlist-import-drop"
+                                        onDragOver={(event) => {
+                                            event.preventDefault();
+                                            event.dataTransfer.dropEffect = 'copy';
+                                        }}
+                                        onDrop={(event) => {
+                                            event.preventDefault();
+                                            const file = event.dataTransfer.files?.[0];
+                                            const text = event.dataTransfer.getData('text/uri-list') || event.dataTransfer.getData('text/plain');
+                                            if (file) {
+                                                void previewKaraokeFile(file);
+                                            } else if (text) {
+                                                setImportUrl(text.trim());
+                                                void previewSpotifyUrl(text);
+                                            }
+                                        }}
+                                    >
+                                        <FileJson size={36} />
+                                        <strong>Arrastra aqui</strong>
+                                        <span>*.karaoke.json</span>
+                                        <span>o</span>
+                                        <span>Spotify Playlist URL</span>
+                                    </div>
+
+                                    <form
+                                        className="playlist-import-form"
+                                        onSubmit={(event) => {
+                                            event.preventDefault();
+                                            void previewSpotifyUrl(importUrl);
+                                        }}
+                                    >
+                                        <label>
+                                            Spotify URL
+                                            <input
+                                                className="search-input"
+                                                value={importUrl}
+                                                onChange={(event) => setImportUrl(event.target.value)}
+                                                onPaste={(event) => {
+                                                    const pasted = event.clipboardData.getData('text');
+                                                    if (isSpotifyPlaylistUrl(pasted)) {
+                                                        setImportUrl(pasted);
+                                                        window.setTimeout(() => void previewSpotifyUrl(pasted), 0);
+                                                    }
+                                                }}
+                                                onFocus={() => setHostInputFocused(true)}
+                                                onBlur={() => setHostInputFocused(false)}
+                                                placeholder="https://open.spotify.com/playlist/..."
+                                            />
+                                        </label>
+                                        <div className="playlist-import-actions">
+                                            <label className="btn-secondary playlist-import-file">
+                                                Seleccionar archivo
+                                                <input
+                                                    type="file"
+                                                    accept=".karaoke.json,application/json"
+                                                    onChange={(event) => {
+                                                        const file = event.target.files?.[0];
+                                                        if (file) void previewKaraokeFile(file);
+                                                        event.currentTarget.value = '';
+                                                    }}
+                                                />
+                                            </label>
+                                            <button className="btn-primary" type="submit" disabled={importing}>
+                                                {importing ? 'Importing...' : 'Preview'}
+                                            </button>
+                                        </div>
+                                    </form>
+                                </>
+                            ) : (
+                                <div className="playlist-import-preview">
+                                    <div className="playlist-import-detected">Playlist detectada</div>
+                                    <h3>{importPreview.playlist.name}</h3>
+                                    <p>{importPreview.playlist.tracks.length} canciones</p>
+                                    <div className="playlist-import-summary">
+                                        <span>✓ {importPreview.validTrackCount} validas</span>
+                                        {importPreview.incompleteTrackCount > 0 && (
+                                            <span>⚠ {importPreview.incompleteTrackCount} con datos incompletos</span>
+                                        )}
+                                        {importPreview.existingCollectionId && (
+                                            <span>Esta playlist ya esta importada.</span>
+                                        )}
+                                    </div>
+                                    <ol className="playlist-import-track-list">
+                                        {importPreview.playlist.tracks.slice(0, 8).map((track, index) => (
+                                            <li key={`${track.title}-${index}`}>
+                                                <span>{track.title}</span>
+                                                <small>{track.artists.join(', ') || 'Unknown Artist'}</small>
+                                            </li>
+                                        ))}
+                                    </ol>
+                                    <div className="playlist-import-actions">
+                                        <button className="btn-secondary" onClick={() => setImportPreview(null)} disabled={importing}>
+                                            Cancelar
+                                        </button>
+                                        <button
+                                            className="btn-primary"
+                                            onClick={() => handleConfirmImport(!!importPreview.existingCollectionId)}
+                                            disabled={importing}
+                                        >
+                                            {importPreview.existingCollectionId ? 'Actualizar' : 'Importar'}
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {importError && <div className="playlist-import-error">{importError}</div>}
+                        </div>
+                    </div>
+                )}
+
                 {/* Search Results */}
                 {searching && (
                     <div className="search-loading">
@@ -550,7 +784,7 @@ export default function Library({ onBack }: LibraryProps) {
                             rowComponent={PlaylistSongRow}
                             rowCount={activeCollection.songs.length}
                             rowHeight={PLAYLIST_ROW_HEIGHT}
-                            rowProps={{ songs: activeCollection.songs, onRemove: handleRemoveFromActiveCollection }}
+                            rowProps={{ songs: activeCollection.songs, onRemove: handleRemoveFromActiveCollection, onResolve: handleResolveImportedSong }}
                             rowKey={(index, data) => data.songs[index].id}
                         />
                     )}

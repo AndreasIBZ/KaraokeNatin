@@ -11,7 +11,14 @@ export interface Song {
     thumbnailUrl: string;
     addedBy: string;        // clientId
     addedAt: number;        // timestamp
+    resolutionStatus?: 'RESOLVED' | 'UNRESOLVED';
+    source?: SongSource;
 }
+
+export type SongSource =
+    | { type: 'local' }
+    | { type: 'spotify'; playlistId?: string | null; trackId?: string | null; url?: string | null }
+    | { type: 'youtube'; videoId?: string | null; url?: string | null };
 
 export type PlayerStatus = 'idle' | 'playing' | 'paused' | 'loading' | 'error';
 
@@ -37,13 +44,22 @@ export interface PlaylistCollection {
     name: string;
     visibility: CollectionVisibility;
     songs: Song[];
+    description?: string | null;
+    source?: PlaylistSource | null;
     createdAt: number;
     updatedAt: number;
 }
 
+export type PlaylistSource =
+    | { type: 'local' }
+    | { type: 'spotify'; playlistId: string; originalUrl: string; importedAt: number };
+
 /** Portable format for sharing collections */
 export interface ExportedCollection {
-    karaokenatin: string;  // version, e.g. "1.0"
+    format?: 'karaoke-playlist';
+    version?: number;
+    generator?: string;
+    karaokenatin?: string;  // legacy version, e.g. "1.0"
     collection: {
         name: string;
         visibility: CollectionVisibility;

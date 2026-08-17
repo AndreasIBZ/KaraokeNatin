@@ -74,7 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2025-10-15
 
 ### Added
-- Initial release of KaraokeNatin.
+- Initial release of FESTEJAR.
 - Tauri desktop host application with embedded web server.
 - YouTube integration via `yt_dlp` for karaoke video search and playback.
 - Real-time song queue management with automatic song advancement.
@@ -85,8 +85,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Playback controls (play, pause, skip, volume) from any connected phone.
 - Local network operation — works over Wi-Fi without internet (except for YouTube content).
 
-[0.2.0]: https://github.com/nojukuramu/KaraokeNatin/compare/v0.1.3-beta...v0.2.0
-[0.1.3-beta]: https://github.com/nojukuramu/KaraokeNatin/compare/v0.1.2-beta...v0.1.3-beta
-[0.1.2-beta]: https://github.com/nojukuramu/KaraokeNatin/compare/v0.1.1-beta...v0.1.2-beta
-[0.1.1-beta]: https://github.com/nojukuramu/KaraokeNatin/compare/v0.1.0...v0.1.1-beta
-[0.1.0]: https://github.com/nojukuramu/KaraokeNatin/releases/tag/v0.1.0
+[0.2.0]: https://github.com/nojukuramu/FESTEJAR/compare/v0.1.3-beta...v0.2.0
+[0.1.3-beta]: https://github.com/nojukuramu/FESTEJAR/compare/v0.1.2-beta...v0.1.3-beta
+[0.1.2-beta]: https://github.com/nojukuramu/FESTEJAR/compare/v0.1.1-beta...v0.1.2-beta
+[0.1.1-beta]: https://github.com/nojukuramu/FESTEJAR/compare/v0.1.0...v0.1.1-beta
+[0.1.0]: https://github.com/nojukuramu/FESTEJAR/releases/tag/v0.1.0

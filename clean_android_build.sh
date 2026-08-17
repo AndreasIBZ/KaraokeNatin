@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ============================================================
-# KaraokeNatin - DEEP CLEAN Android (Linux/macOS)
+# FESTEJAR - DEEP CLEAN Android (Linux/macOS)
 # POSIX counterpart to clean_android_build.bat.
 # ============================================================
 
@@ -10,7 +10,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TAURI_DIR="${PROJECT_ROOT}/apps/host/src-tauri"
 
 echo "============================================================"
-echo " KaraokeNatin - DEEP CLEAN Android"
+echo " FESTEJAR - DEEP CLEAN Android"
 echo "============================================================"
 
 # --- Configuration Loading ---

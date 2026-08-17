@@ -1,9 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions for KaraokeNatin on desktop and mobile",
+  "description": "Permissions for FESTEJAR on desktop and mobile",
   "windows": [
-    "main"
+    "main",
+    "player-display"
   ],
   "permissions": [
     "core:default",

@@ -15,14 +15,14 @@ Two independent jobs, `build-windows` and `build-android`. Each installs depende
 
 | Platform | Steps | Artifact |
 |---|---|---|
-| Windows | `pnpm --filter @karaokenatin/host run tauri:build` | `windows-nsis-installer` (`.exe`), `windows-msi-installer` (`.msi`) |
+| Windows | `pnpm --filter @FESTEJAR/host run tauri:build` | `windows-nsis-installer` (`.exe`), `windows-msi-installer` (`.msi`) |
 | Android | `tauri android init` then `tauri android build` | `android-apk-universal`, `android-apk-all` |
 
 Both are uploaded as workflow run artifacts (Actions tab → the run → Artifacts), not published anywhere. There is no tagging step, no GitHub Release, no signing. That's not a gap introduced here — the original never had any of that either.
 
 ## Known state, from this repo's own CI history
 
-This exact file has one confirmed successful run: [21795050307](https://github.com/nojukuramu/KaraokeNatin/actions/runs/21795050307) (2026-02-08), Windows job green, producing real `.exe`/`.msi` artifacts (now expired — GitHub keeps run artifacts 90 days).
+This exact file has one confirmed successful run: [21795050307](https://github.com/nojukuramu/FESTEJAR/actions/runs/21795050307) (2026-02-08), Windows job green, producing real `.exe`/`.msi` artifacts (now expired — GitHub keeps run artifacts 90 days).
 
 **The Android job has never succeeded in this repository's Actions history**, including in that same run — it failed in under 90 seconds, before reaching the NDK/Gradle steps. Every other recorded `build-release.yml` run failed on both jobs. Neither `v0.1.3-beta` nor `v0.2.0-beta` was built by this workflow — no workflow file existed in the repo when either was tagged, so those releases were built and uploaded locally.
 
@@ -38,9 +38,9 @@ To reproduce a step locally rather than iterating on GitHub:
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm --filter @karaokenatin/shared run build
-pnpm --filter @karaokenatin/host run build
-pnpm --filter @karaokenatin/host run tauri:build   # Windows/desktop
+pnpm --filter @FESTEJAR/shared run build
+pnpm --filter @FESTEJAR/host run build
+pnpm --filter @FESTEJAR/host run tauri:build   # Windows/desktop
 ```
 
 ```bash
@@ -56,6 +56,6 @@ The repo's own `build.sh` / `build.bat` are a separate, more built-out path (car
 | Symptom | Likely cause |
 |---|---|
 | `gdk-3.0` / `webkit2gtk` not found | Not applicable to this workflow — it doesn't build Linux |
-| `Cannot find module '@karaokenatin/shared'` | The shared-package build step failed or didn't run before the frontend build |
+| `Cannot find module '@FESTEJAR/shared'` | The shared-package build step failed or didn't run before the frontend build |
 | Android job fails fast (under ~2 minutes) | Matches this workflow's entire history in this repo — see above. Check the job log for the actual first error rather than assuming NDK/Gradle |
 | APK/installer missing from artifacts | `if-no-files-found: warn` on some upload steps means a missing file doesn't fail the job — check the "Find APK files" / "Verify build artifacts" step output |

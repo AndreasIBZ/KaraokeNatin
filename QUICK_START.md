@@ -1,6 +1,6 @@
 # Quick Start
 
-Getting KaraokeNatin running from a clean checkout.
+Getting FESTEJAR running from a clean checkout.
 
 ## What you are building
 
@@ -33,7 +33,7 @@ sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev \
 pnpm run setup
 ```
 
-This installs dependencies **and builds `packages/shared`**. That second step is not optional: `apps/host` imports `@karaokenatin/shared` by its package `main`, so without a built `dist/` the typecheck fails with unresolved-module errors. If you hit that later, run `pnpm run build:shared`.
+This installs dependencies **and builds `packages/shared`**. That second step is not optional: `apps/host` imports `@FESTEJAR/shared` by its package `main`, so without a built `dist/` the typecheck fails with unresolved-module errors. If you hit that later, run `pnpm run build:shared`.
 
 ## Run in development
 
@@ -94,7 +94,7 @@ The QR URL carries a join token (`?t=…`) and signaling verifies it on every jo
 
 | Symptom | Cause |
 |---|---|
-| `Cannot find module '@karaokenatin/shared'` | `packages/shared` is not built — run `pnpm run build:shared` |
+| `Cannot find module '@FESTEJAR/shared'` | `packages/shared` is not built — run `pnpm run build:shared` |
 | `gdk-3.0` / `webkit2gtk` not found while building | Missing Linux system deps, see Prerequisites |
 | Guest scans the QR but is rejected | The join token is missing from the URL — check `?t=` survived |
 | Guest cannot reach the host at all | Different networks, or client isolation is on at the access point |

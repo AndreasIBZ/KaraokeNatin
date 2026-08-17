@@ -1,5 +1,5 @@
 @echo off
-echo Starting KaraokeNatin Development Environment...
+echo Starting FESTEJAR Development Environment...
 echo.
 
 REM Get the current directory (project root)
@@ -7,21 +7,21 @@ set PROJECT_ROOT=%~dp0
 
 REM Terminal 1: Web Client (for development/testing only)
 echo [1/3] Launching Web Client...
-start "KaraokeNatin - Web Client" powershell -NoExit -Command "cd '%PROJECT_ROOT%'; pnpm run dev:web"
+start "FESTEJAR - Web Client" powershell -NoExit -Command "cd '%PROJECT_ROOT%'; pnpm run dev:web"
 
 REM Wait a bit for stability
 timeout /t 2 /nobreak >nul
 
 REM Terminal 2: Host Vite Dev Server
 echo [2/3] Launching Host Vite Dev Server...
-start "KaraokeNatin - Host (Vite)" powershell -NoExit -Command "cd '%PROJECT_ROOT%apps\host'; pnpm dev"
+start "FESTEJAR - Host (Vite)" powershell -NoExit -Command "cd '%PROJECT_ROOT%apps\host'; pnpm dev"
 
 REM Wait a bit for Vite to start
 timeout /t 3 /nobreak >nul
 
 REM Terminal 3: Host Tauri Application (includes embedded web server + signaling server)
 echo [3/3] Launching Host Tauri App...
-start "KaraokeNatin - Host (Tauri)" powershell -NoExit -Command "cd '%PROJECT_ROOT%apps\host'; pnpm tauri dev"
+start "FESTEJAR - Host (Tauri)" powershell -NoExit -Command "cd '%PROJECT_ROOT%apps\host'; pnpm tauri dev"
 
 echo.
 echo ===============================================================

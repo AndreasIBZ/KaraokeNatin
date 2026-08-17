@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>KaraokeNatin Remote</title>
+    <title>FESTEJAR Remote</title>
     <!-- Fonts: no internet dependency. 'Inter' is used when installed locally;
          otherwise this degrades to the platform's native UI font stack. -->
     <script src="/vendor/lucide-1.27.0.min.js"></script>
@@ -316,6 +316,79 @@
             background: var(--accent-hover);
         }
 
+        .control-btn:disabled {
+            opacity: 0.35;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .control-btn:disabled:hover {
+            background: var(--bg-secondary);
+            transform: none;
+        }
+
+        .control-btn.primary:disabled:hover {
+            background: var(--accent);
+        }
+
+        .singer-mirror {
+            padding: 18px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .singer-mirror-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .singer-mirror-title {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+        }
+
+        .singer-mirror-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--text-secondary);
+            font-size: 13px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .singer-mirror-toggle input {
+            accent-color: var(--accent);
+        }
+
+        .singer-mirror-frame {
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            background: #000;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        .singer-mirror-frame iframe {
+            width: 100%;
+            height: 100%;
+            border: 0;
+            display: block;
+        }
+
+        .singer-mirror-empty {
+            padding: 18px;
+            border-radius: 10px;
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+            font-size: 13px;
+            text-align: center;
+        }
+
         /* Volume Slider */
         .volume-control {
             display: flex;
@@ -404,6 +477,26 @@
 
         .search-btn:hover {
             background: var(--accent-hover);
+        }
+
+        .search-options {
+            display: flex;
+            align-items: center;
+            margin-top: 10px;
+        }
+
+        .search-mode-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--text-secondary);
+            font-size: 13px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .search-mode-toggle input {
+            accent-color: var(--accent);
         }
 
         /* Search Results */
@@ -1155,16 +1248,31 @@
     <script src="/vendor/peerjs-1.5.5.min.js"></script>
     <script src="/vendor/qrcodejs-1.0.0.min.js"></script>
     <script>
+        function getOrCreateClientKey() {
+            const stored = localStorage.getItem('karaoke_client_key');
+            if (stored) return stored;
+            const next = window.crypto && typeof window.crypto.randomUUID === 'function'
+                ? window.crypto.randomUUID()
+                : `client-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+            localStorage.setItem('karaoke_client_key', next);
+            return next;
+        }
+
         // State
         let state = {
-            screen: 'join', // 'join', 'loading', 'connected', 'disconnected'
+            screen: 'join', // 'join', 'loading', 'waiting', 'connected', 'disconnected'
             username: localStorage.getItem('karaoke_username') || '',
+            clientKey: getOrCreateClientKey(),
             activeTab: 'playing', // 'playing', 'search', 'queue', 'playlist'
             roomState: null,
             searchQuery: '',
             searchResults: [],
             searching: false,
             isInputFocused: false,
+            karaokeOnly: localStorage.getItem('karaoke_search_karaoke_only') !== 'false',
+            singerMirrorEnabled: localStorage.getItem('karaoke_singer_mirror_enabled') === 'true',
+            guestsCanInvite: true,
+            guestsCanReorderQueue: false,
             theme: window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark',
             addedSongs: new Set(),
             loadingActions: new Set(),
@@ -1177,7 +1285,7 @@
             isInAppRemote: new URLSearchParams(window.location.search).get('mode') === 'inapp',
             // Join token from the QR URL (?t=...). The signaling server verifies
             // this on every JOIN_ROOM, so a guest arriving without it is rejected.
-            joinToken: new URLSearchParams(window.location.search).get('t') || '',
+            joinToken: new URLSearchParams(window.location.search).get('t') || localStorage.getItem('karaoke_join_token') || '',
             // Local Library (from Native App)
             localPlaylists: [],
             activeLocalCollectionIdx: 0,
@@ -1190,6 +1298,10 @@
         let peer = null;
         let dataConn = null;
         let modalCallback = null;
+        let singerMirrorIframe = null;
+        let singerMirrorVideoId = null;
+        let singerMirrorLastStatus = null;
+        let singerMirrorLastSeekSecond = null;
 
         // Theme
         function initTheme() {
@@ -1255,29 +1367,75 @@
 
         function render() {
             const app = $('#app');
+            const focusSnapshot = getFocusSnapshot();
 
             if (state.screen === 'join') {
                 app.innerHTML = renderJoinScreen();
+                restoreFocus(focusSnapshot);
+                syncSingerMirror();
                 return;
             }
 
             if (state.screen === 'loading') {
                 app.innerHTML = renderLoadingScreen();
+                restoreFocus(focusSnapshot);
+                syncSingerMirror();
+                return;
+            }
+
+            if (state.screen === 'waiting') {
+                app.innerHTML = renderWaitingScreen();
+                restoreFocus(focusSnapshot);
+                syncSingerMirror();
                 return;
             }
 
             if (state.screen === 'disconnected') {
                 app.innerHTML = renderDisconnectedScreen();
+                restoreFocus(focusSnapshot);
+                syncSingerMirror();
                 return;
             }
 
             app.innerHTML = renderMainScreen();
+            restoreFocus(focusSnapshot);
+            requestAnimationFrame(syncSingerMirror);
+        }
+
+        function getFocusSnapshot() {
+            const el = document.activeElement;
+            if (!el || !el.id || !['INPUT', 'TEXTAREA'].includes(el.tagName)) return null;
+            return {
+                id: el.id,
+                start: typeof el.selectionStart === 'number' ? el.selectionStart : null,
+                end: typeof el.selectionEnd === 'number' ? el.selectionEnd : null
+            };
+        }
+
+        function restoreFocus(snapshot) {
+            if (!snapshot) return;
+            requestAnimationFrame(() => {
+                const el = document.getElementById(snapshot.id);
+                if (!el || typeof el.focus !== 'function') return;
+                try {
+                    el.focus({ preventScroll: true });
+                } catch (_) {
+                    el.focus();
+                }
+                if (
+                    typeof el.setSelectionRange === 'function' &&
+                    snapshot.start !== null &&
+                    snapshot.end !== null
+                ) {
+                    el.setSelectionRange(snapshot.start, snapshot.end);
+                }
+            });
         }
 
         function renderJoinScreen() {
             return `
                 <div class="join-screen">
-                    <div class="join-logo">KaraokeNatin</div>
+                    <div class="join-logo">FESTEJAR</div>
                     <p class="join-subtitle">Enter your name to join the session</p>
                     <form class="join-form" onsubmit="handleJoin(event)">
                         <input 
@@ -1303,6 +1461,18 @@
                 <div class="loading">
                     <div class="spinner"></div>
                     <p>${state.reconnecting ? `Reconnecting... (attempt ${state.reconnectAttempts})` : 'Connecting to host...'}</p>
+                </div>
+            `;
+        }
+
+        function renderWaitingScreen() {
+            return `
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>En sala de espera</p>
+                    <p style="margin-top: 8px; max-width: 280px; color: var(--text-secondary); font-size: 14px; line-height: 1.4;">
+                        Esperando confirmación del KJ.
+                    </p>
                 </div>
             `;
         }
@@ -1335,16 +1505,18 @@
             return `
                 <header class="header">
                     <div class="header-left">
-                        <span class="logo">KaraokeNatin</span>
+                        <span class="logo">FESTEJAR</span>
                         <div class="connection-status">
                             <span class="status-dot"></span>
                             <span>${state.username}</span>
                         </div>
                     </div>
                     <div class="header-actions">
+                        ${state.guestsCanInvite ? `
                         <button class="icon-btn" onclick="showInviteQR()" title="Invite friends">
                             ${icons.userPlus}
                         </button>
+                        ` : ''}
                         <button class="icon-btn" onclick="toggleTheme()" title="Toggle theme">
                             ${state.theme === 'dark' ? icons.sun : icons.moon}
                         </button>
@@ -1378,11 +1550,30 @@
             <footer class="yt-footer">
                 Videos are played via YouTube embedding. All videos are subject to YouTube's <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener">Terms of Service</a>.
             </footer>
-        `;
+        `; 
+        }
+
+        function normalizeName(name) {
+            return (name || '').trim().toLocaleLowerCase();
+        }
+
+        function canControlCurrentSong(currentSong) {
+            return !!currentSong && normalizeName(currentSong.addedBy) === normalizeName(state.username);
+        }
+
+        function canControlTransport() {
+            return canControlCurrentSong(state.roomState?.player?.currentSong) ||
+                state.guestsCanReorderQueue === true;
         }
 
         function renderPlayingTab(currentSong, player, isPlaying) {
             const queue = state.roomState?.queue || [];
+            const canReorderQueue = state.guestsCanReorderQueue === true;
+            const canControl = canControlTransport();
+            const controlDisabledTitle = canReorderQueue
+                ? 'Vice-KJ control'
+                : 'Only the singer or a Vice-KJ can control this song';
+            const reorderDisabledTitle = canReorderQueue ? '' : 'El KJ no permite cambiar el orden';
             return `
             <section class="now-playing">
                 ${currentSong ? `
@@ -1403,10 +1594,10 @@
                 </section>
 
             <section class="controls">
-                <button class="control-btn primary" onclick="togglePlayPause()" title="${isPlaying ? 'Pause' : 'Play'}" id="play-pause-btn">
+                <button class="control-btn primary" onclick="togglePlayPause()" title="${canControl ? (isPlaying ? 'Pause' : 'Play') : controlDisabledTitle}" id="play-pause-btn" ${canControl ? '' : 'disabled'}>
                     ${isPlaying ? icons.pause : icons.play}
                 </button>
-                <button class="control-btn" onclick="skipSong()" title="Skip">
+                <button class="control-btn" onclick="skipSong()" title="${canControl ? 'Skip' : controlDisabledTitle}" ${canControl ? '' : 'disabled'}>
                     ${icons.skipForward}
                 </button>
             </section>
@@ -1420,6 +1611,8 @@
                             ${queue.map((song, i) => {
                 const isAnyMoveLoading = ['up', 'down'].some(d => state.loadingActions.has('move_' + song.id + '_' + d));
                 const isRemoveLoading = state.loadingActions.has('rmq_' + song.id);
+                const disableMoveUp = !canReorderQueue || i === 0 || isAnyMoveLoading;
+                const disableMoveDown = !canReorderQueue || i === queue.length - 1 || isAnyMoveLoading;
                 return `
                                 <div class="queue-item-mini${isRemoveLoading ? ' removing' : ''}">
                                     <div class="queue-number">${i + 1}</div>
@@ -1429,10 +1622,10 @@
                                         <div class="queue-meta">${escapeHtml(song.addedBy || 'Guest')}</div>
                                     </div>
                                     <div class="queue-actions-mini${isAnyMoveLoading ? ' loading' : ''}">
-                                        <button class="queue-action-btn-mini" onclick="moveQueueItem('${song.id}', 'up')" title="Move up" ${i === 0 || isAnyMoveLoading ? 'disabled' : ''}>
+                                        <button class="queue-action-btn-mini" onclick="moveQueueItem('${song.id}', 'up')" title="${canReorderQueue ? 'Move up' : reorderDisabledTitle}" ${disableMoveUp ? 'disabled' : ''}>
                                             ${icons.chevronUp}
                                         </button>
-                                        <button class="queue-action-btn-mini" onclick="moveQueueItem('${song.id}', 'down')" title="Move down" ${i === queue.length - 1 || isAnyMoveLoading ? 'disabled' : ''}>
+                                        <button class="queue-action-btn-mini" onclick="moveQueueItem('${song.id}', 'down')" title="${canReorderQueue ? 'Move down' : reorderDisabledTitle}" ${disableMoveDown ? 'disabled' : ''}>
                                             ${icons.chevronDown}
                                         </button>
                                         <button class="queue-action-btn-mini" onclick="shareSongLink('${song.youtubeId}')" title="Compartir">
@@ -1449,6 +1642,111 @@
                 ` : ''
                 }
         `;
+        }
+
+        function renderSingerMirror(currentSong, player) {
+            if (!currentSong || !canControlCurrentSong(currentSong)) return '';
+            const isEnabled = state.singerMirrorEnabled;
+            return `
+                <section class="singer-mirror">
+                    <div class="singer-mirror-header">
+                        <div class="singer-mirror-title">Mi pantalla</div>
+                        <label class="singer-mirror-toggle">
+                            <input
+                                type="checkbox"
+                                ${isEnabled ? 'checked' : ''}
+                                onchange="setSingerMirrorEnabled(this.checked)"
+                            >
+                            <span>Video/letra</span>
+                        </label>
+                    </div>
+                    ${isEnabled ? `
+                        <div
+                            id="singer-mirror-slot"
+                            class="singer-mirror-frame"
+                            data-video-id="${escapeHtml(currentSong.youtubeId)}"
+                            data-status="${escapeHtml(player.status || 'idle')}"
+                            data-current-time="${Number(player.currentTime || 0)}"
+                        ></div>
+                    ` : `
+                        <div class="singer-mirror-empty">Mirror apagado</div>
+                    `}
+                </section>
+            `;
+        }
+
+        function setSingerMirrorEnabled(value) {
+            state.singerMirrorEnabled = value;
+            localStorage.setItem('karaoke_singer_mirror_enabled', value ? 'true' : 'false');
+            if (!value) teardownSingerMirror();
+            render();
+        }
+
+        function syncSingerMirror() {
+            const slot = document.getElementById('singer-mirror-slot');
+            const currentSong = state.roomState?.player?.currentSong;
+            const player = state.roomState?.player || {};
+
+            if (
+                !slot ||
+                !state.singerMirrorEnabled ||
+                !currentSong ||
+                !canControlCurrentSong(currentSong)
+            ) {
+                teardownSingerMirror();
+                return;
+            }
+
+            const videoId = currentSong.youtubeId;
+            if (!singerMirrorIframe || singerMirrorVideoId !== videoId || !slot.contains(singerMirrorIframe)) {
+                slot.innerHTML = '';
+                singerMirrorIframe = document.createElement('iframe');
+                singerMirrorVideoId = videoId;
+                singerMirrorLastStatus = null;
+                singerMirrorLastSeekSecond = null;
+                const start = Math.max(0, Math.floor(Number(player.currentTime || 0)));
+                const origin = encodeURIComponent(window.location.origin);
+                singerMirrorIframe.allow = 'autoplay; encrypted-media; picture-in-picture';
+                singerMirrorIframe.allowFullscreen = true;
+                singerMirrorIframe.src = `https://www.youtube.com/embed/${encodeURIComponent(videoId)}?enablejsapi=1&playsinline=1&rel=0&modestbranding=1&controls=0&mute=1&origin=${origin}&start=${start}`;
+                slot.appendChild(singerMirrorIframe);
+                window.setTimeout(() => postSingerMirrorCommand('mute'), 600);
+            }
+
+            const currentTime = Math.max(0, Math.floor(Number(player.currentTime || 0)));
+            const status = player.status || 'idle';
+            const shouldSeek = singerMirrorLastSeekSecond === null ||
+                Math.abs(currentTime - singerMirrorLastSeekSecond) >= 5;
+
+            if (shouldSeek) {
+                postSingerMirrorCommand('seekTo', [currentTime, true]);
+                singerMirrorLastSeekSecond = currentTime;
+            }
+
+            if (status !== singerMirrorLastStatus) {
+                if (status === 'playing' || status === 'loading') {
+                    postSingerMirrorCommand('playVideo');
+                } else {
+                    postSingerMirrorCommand('pauseVideo');
+                }
+                singerMirrorLastStatus = status;
+            }
+        }
+
+        function postSingerMirrorCommand(func, args = []) {
+            if (!singerMirrorIframe?.contentWindow) return;
+            singerMirrorIframe.contentWindow.postMessage(JSON.stringify({
+                event: 'command',
+                func,
+                args,
+            }), '*');
+        }
+
+        function teardownSingerMirror() {
+            singerMirrorIframe = null;
+            singerMirrorVideoId = null;
+            singerMirrorLastStatus = null;
+            singerMirrorLastSeekSecond = null;
         }
 
         function renderSearchTab() {
@@ -1469,6 +1767,16 @@
                             Search
                         </button>
                 </form>
+                <div class="search-options">
+                    <label class="search-mode-toggle">
+                        <input
+                            type="checkbox"
+                            ${state.karaokeOnly ? 'checked' : ''}
+                            onchange="setKaraokeOnly(this.checked)"
+                        >
+                        <span>Solo versiones karaoke</span>
+                    </label>
+                </div>
                 </section>
 
             ${state.searching ? `
@@ -1560,11 +1868,16 @@
             `;
             }
 
+            const canReorderQueue = state.guestsCanReorderQueue === true;
+            const reorderDisabledTitle = canReorderQueue ? '' : 'El KJ no permite cambiar el orden';
+
             return `
             <section class="queue-list">
                 ${queue.map((song, i) => {
                 const isAnyMoveLoading = ['up', 'down'].some(d => state.loadingActions.has('move_' + song.id + '_' + d));
                 const isRemoveLoading = state.loadingActions.has('rmq_' + song.id);
+                const disableMoveUp = !canReorderQueue || i === 0 || isAnyMoveLoading;
+                const disableMoveDown = !canReorderQueue || i === queue.length - 1 || isAnyMoveLoading;
                 return `
                         <div class="queue-item${isRemoveLoading ? ' removing' : ''}">
                             <div class="queue-number">${i + 1}</div>
@@ -1574,10 +1887,10 @@
                                 <div class="queue-meta">${escapeHtml(song.addedBy || 'Guest')}</div>
                             </div>
                             <div class="queue-actions${isAnyMoveLoading ? ' actions-loading' : ''}">
-                                <button class="queue-action-btn" onclick="moveQueueItem('${song.id}', 'up')" title="Move up" ${isAnyMoveLoading ? 'disabled' : ''}>
+                                <button class="queue-action-btn" onclick="moveQueueItem('${song.id}', 'up')" title="${canReorderQueue ? 'Move up' : reorderDisabledTitle}" ${disableMoveUp ? 'disabled' : ''}>
                                     ${icons.chevronUp}
                                 </button>
-                                <button class="queue-action-btn" onclick="moveQueueItem('${song.id}', 'down')" title="Move down" ${isAnyMoveLoading ? 'disabled' : ''}>
+                                <button class="queue-action-btn" onclick="moveQueueItem('${song.id}', 'down')" title="${canReorderQueue ? 'Move down' : reorderDisabledTitle}" ${disableMoveDown ? 'disabled' : ''}>
                                     ${icons.chevronDown}
                                 </button>
                                 <button class="queue-action-btn" onclick="shareSongLink('${song.youtubeId}')" title="Compartir">
@@ -1598,7 +1911,7 @@
             const downloadNote = !state.isInAppRemote ? `
             <div class="playlist-web-note">
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
-                    <span>Personal Playlists are not available in Web Remote. Download the app <a href="https://noju.pythonanywhere.com/karaokenatin/" target="_blank" rel="noopener">here</a>.</span>
+                    <span>Personal Playlists are not available in Web Remote. Download FESTEJAR from the project page.</span>
                 </div>
             ` : '';
 
@@ -1759,7 +2072,7 @@
                             <p style="font-size: 14px;">${state.librarySearchQuery ? 'No matches found' : 'No songs in this collection'}</p>
                         </div>
                     ` : songs.map((song) => {
-                const isLib2QueueLoading = state.loadingActions.has('lib2q_' + song.id + ' ');
+                const isLib2QueueLoading = state.loadingActions.has('lib2q_' + song.id);
                 return `
                         <div class="queue-item">
                             <img class="queue-thumb" src="${song.thumbnailUrl || `https://i.ytimg.com/vi/${song.youtubeId}/hqdefault.jpg`}" alt="">
@@ -1789,6 +2102,9 @@
             if (name) {
                 state.username = name;
                 localStorage.setItem('karaoke_username', name);
+                if (state.joinToken) {
+                    localStorage.setItem('karaoke_join_token', state.joinToken);
+                }
                 state.screen = 'loading';
                 render();
                 initConnection();
@@ -1797,6 +2113,12 @@
 
         function setTab(tab) {
             state.activeTab = tab;
+            render();
+        }
+
+        function setKaraokeOnly(value) {
+            state.karaokeOnly = value;
+            localStorage.setItem('karaoke_search_karaoke_only', value ? 'true' : 'false');
             render();
         }
 
@@ -1810,16 +2132,21 @@
                 state.searchResults = [];
                 state.addedSongs.clear(); // Clear added songs when doing a new search
                 render();
-                sendCommand({ type: 'SEARCH', query: query, limit: 8 });
+                sendCommand({ type: 'SEARCH', query: query, limit: 8, karaokeOnly: state.karaokeOnly });
             }
         }
 
         function addFromSearch(url) {
-            const actionKey = `queue_${url} `;
+            const actionKey = `queue_${url}`;
             if (state.loadingActions.has(actionKey)) return; // Prevent double-click
+            const result = state.searchResults.find(r => r.url === url);
+            if (!result) {
+                showToast('Song result expired');
+                return;
+            }
             state.loadingActions.add(actionKey);
             render();
-            sendCommand({ type: 'ADD_SONG', youtubeUrl: url, addedBy: state.username });
+            sendCommand({ type: 'ADD_SEARCH_RESULT', result, addedBy: state.username });
             // Loading state will be cleared on STATE_UPDATE
         }
 
@@ -1829,7 +2156,7 @@
             const playlists = rs.playlists || [];
             const collectionId = playlists.length > 0 ? playlists[state.activeCollectionIdx || 0].id : null;
             if (!collectionId) { showToast('No playlist available', 'error'); return; }
-            const actionKey = `playlist_${url} `;
+            const actionKey = `playlist_${url}`;
             if (state.loadingActions.has(actionKey)) return;
             state.loadingActions.add(actionKey);
             render();
@@ -1837,7 +2164,7 @@
         }
 
         function playlistToQueue(collectionId, songId) {
-            const actionKey = `p2q_${songId} `;
+            const actionKey = `p2q_${songId}`;
             if (state.loadingActions.has(actionKey)) return;
             state.loadingActions.add(actionKey);
             render();
@@ -1845,7 +2172,7 @@
         }
 
         function removeFromPlaylist(collectionId, songId) {
-            const actionKey = `rmpl_${songId} `;
+            const actionKey = `rmpl_${songId}`;
             if (state.loadingActions.has(actionKey)) return;
             state.loadingActions.add(actionKey);
             render();
@@ -1899,7 +2226,7 @@
         }
 
         function libraryToQueue(songId, youtubeUrl) {
-            const actionKey = `lib2q_${songId} `;
+            const actionKey = `lib2q_${songId}`;
             if (state.loadingActions.has(actionKey)) return;
             state.loadingActions.add(actionKey);
             render();
@@ -1933,7 +2260,11 @@
         }
 
         function moveQueueItem(songId, direction) {
-            const actionKey = `move_${songId}_${direction} `;
+            if (!state.guestsCanReorderQueue) {
+                showToast('El KJ no permite cambiar el orden de la cola');
+                return;
+            }
+            const actionKey = `move_${songId}_${direction}`;
             if (state.loadingActions.has(actionKey)) return;
             state.loadingActions.add(actionKey);
             render();
@@ -1945,7 +2276,7 @@
         }
 
         function removeFromQueue(songId) {
-            const actionKey = `rmq_${songId} `;
+            const actionKey = `rmq_${songId}`;
             if (state.loadingActions.has(actionKey)) return;
             state.loadingActions.add(actionKey);
             render();
@@ -1954,6 +2285,10 @@
 
         function togglePlayPause() {
             if (!state.roomState) return;
+            if (!canControlTransport()) {
+                showToast('Solo el cantante o un Vice-KJ puede controlar esta cancion');
+                return;
+            }
             const isPlaying = state.roomState.player.status === 'playing';
             // Optimistically update local state immediately
             state.roomState.player.status = isPlaying ? 'paused' : 'playing';
@@ -1962,10 +2297,18 @@
         }
 
         function skipSong() {
+            if (!canControlTransport()) {
+                showToast('Solo el cantante o un Vice-KJ puede controlar esta cancion');
+                return;
+            }
             sendCommand({ type: 'SKIP' });
         }
 
         function showInviteQR() {
+            if (!state.guestsCanInvite) {
+                showToast('El KJ ha desactivado las invitaciones');
+                return;
+            }
             // Get the current URL (the remote UI URL) which others can use to join
             const inviteUrl = window.location.href;
             showModal('Invite Friends', `
@@ -2226,7 +2569,7 @@
             socket.on('disconnect', () => {
                 if (isStale()) return;
                 console.log('[Remote] Socket disconnected');
-                if (state.screen === 'connected') {
+                if (state.screen === 'connected' || state.screen === 'waiting') {
                     scheduleReconnect();
                 }
             });
@@ -2305,12 +2648,13 @@
                     if (isStale()) return;
                     const wasReconnecting = state.reconnectAttempts > 0;
                     console.log('[Remote] Connected to host!');
-                    state.screen = 'connected';
+                    state.screen = 'waiting';
                     state.reconnectAttempts = 0;
                     state.reconnecting = false;
                     isConnecting = false;
                     render();
-                    showToast(wasReconnecting ? 'Reconnected!' : 'Connected!');
+                    sendCommand({ type: 'SET_DISPLAY_NAME', name: state.username, clientKey: state.clientKey });
+                    showToast(wasReconnecting ? 'Reconnected!' : 'Esperando confirmacion del KJ');
                 });
 
                 dataConn.on('data', (data) => {
@@ -2328,7 +2672,41 @@
                             // first full STATE_UPDATE arrives on connect.
                             return;
                         }
+                        const previousSongId = state.roomState?.player?.currentSong?.id || null;
                         state.roomState = { ...state.roomState, ...(data.patch || {}) };
+                        const nextSong = state.roomState?.player?.currentSong;
+                        const canMirrorWithoutRender = state.activeTab === 'playing' &&
+                            state.singerMirrorEnabled &&
+                            previousSongId === (nextSong?.id || null) &&
+                            !!nextSong &&
+                            canControlCurrentSong(nextSong);
+                        if (canMirrorWithoutRender) {
+                            syncSingerMirror();
+                            return;
+                        }
+                        render();
+                        return;
+                    }
+
+                    if (data.type === 'SESSION_SETTINGS') {
+                        state.guestsCanInvite = data.guestsCanInvite !== false;
+                        state.guestsCanReorderQueue = data.guestsCanReorderQueue === true;
+                        render();
+                        return;
+                    }
+
+                    if (data.type === 'WAITING_APPROVAL') {
+                        state.screen = 'waiting';
+                        render();
+                        return;
+                    }
+
+                    if (data.type === 'DISCONNECT') {
+                        showToast(data.message || 'Disconnected by host');
+                        cleanup();
+                        state.screen = 'disconnected';
+                        state.reconnecting = false;
+                        isConnecting = false;
                         render();
                         return;
                     }
@@ -2372,9 +2750,12 @@
                         }
 
                         state.roomState = newState;
+                        state.screen = 'connected';
                         // Skip render if user is typing to prevent input disruption
                         if (!state.isInputFocused) {
                             render();
+                        } else {
+                            syncSingerMirror();
                         }
                     } else if (data.type === 'SEARCH_RESULTS') {
                         state.searching = false;
@@ -2390,7 +2771,7 @@
                 dataConn.on('close', () => {
                     if (isStale()) return;
                     console.log('[Remote] Data connection closed');
-                    if (state.screen === 'connected') {
+                    if (state.screen === 'connected' || state.screen === 'waiting') {
                         scheduleReconnect();
                     }
                 });
@@ -2450,7 +2831,14 @@
             }
         }, 2000);
 
-        render();
+        if (state.username.trim() && state.joinToken) {
+            localStorage.setItem('karaoke_join_token', state.joinToken);
+            state.screen = 'loading';
+            render();
+            initConnection();
+        } else {
+            render();
+        }
     </script>
 </body>
 

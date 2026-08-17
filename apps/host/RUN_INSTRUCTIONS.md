@@ -9,14 +9,14 @@ The Tauri host needs TWO separate processes:
 
 ### Terminal 1: Start Vite Dev Server
 ```powershell
-cd C:\Users\Noju\Projects\KaraokeNatin\apps\host
+cd C:\Users\Noju\Projects\FESTEJAR\apps\host
 pnpm dev
 ```
 Wait for Vite to show: `➜  Local:   http://localhost:5173/`
 
 ### Terminal 2: Start Tauri
 ```powershell
-cd C:\Users\Noju\Projects\KaraokeNatin\apps\host
+cd C:\Users\Noju\Projects\FESTEJAR\apps\host
 pnpm tauri dev
 ```
 

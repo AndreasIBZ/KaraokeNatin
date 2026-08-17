@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ============================================================
-# KaraokeNatin Build Script - Android & Desktop (Linux/macOS)
+# FESTEJAR Build Script - Android & Desktop (Linux/macOS)
 # POSIX counterpart to build.bat. On Windows, use build.bat.
 # ============================================================
 # Usage:
@@ -68,9 +68,9 @@ BUILD_TOOLS="${ANDROID_HOME}/build-tools/${BUILD_TOOLS_VERSION}"
 echo "Using Android build-tools ${BUILD_TOOLS_VERSION} (${BUILD_TOOLS})"
 
 # --- Keystore Configuration ---
-KEYSTORE_PATH="${KEYSTORE_PATH:-karaokenatin.keystore}"
+KEYSTORE_PATH="${KEYSTORE_PATH:-FESTEJAR.keystore}"
 KEYSTORE="${PROJECT_ROOT}/${KEYSTORE_PATH}"
-KEYSTORE_ALIAS="${KEYSTORE_ALIAS:-karaokenatin}"
+KEYSTORE_ALIAS="${KEYSTORE_ALIAS:-FESTEJAR}"
 
 # --- Parse argument ---
 TARGET="${1:-all}"
@@ -95,12 +95,12 @@ finish() {
 sign_apk_interactive() {
     echo
     echo "============================================================"
-    echo " KaraokeNatin - Sign Android APK"
+    echo " FESTEJAR - Sign Android APK"
     echo "============================================================"
     echo
 
     local apk_unsigned="${ANDROID_GEN}/app/build/outputs/apk/arm64/release/app-arm64-release-unsigned.apk"
-    local apk_signed="${PROJECT_ROOT}/KaraokeNatin-arm64-release.apk"
+    local apk_signed="${PROJECT_ROOT}/FESTEJAR-arm64-release.apk"
 
     if [ ! -f "$apk_unsigned" ]; then
         echo "ERROR: No unsigned APK found. Run \"build.sh android\" first."
@@ -142,18 +142,18 @@ sign_apk_interactive() {
 step_build_shared_and_frontend() {
     echo
     echo "============================================================"
-    echo " KaraokeNatin Build - ${TARGET}"
+    echo " FESTEJAR Build - ${TARGET}"
     echo "============================================================"
     echo
 
     echo "[1/4] Building shared package..."
-    (cd "$PROJECT_ROOT" && pnpm --filter @karaokenatin/shared build) \
+    (cd "$PROJECT_ROOT" && pnpm --filter @FESTEJAR/shared build) \
         || { echo "ERROR: Failed to build shared package."; exit 1; }
     echo "      Shared package built OK."
     echo
 
     echo "[2/4] Building host frontend..."
-    (cd "$PROJECT_ROOT" && pnpm --filter @karaokenatin/host build) \
+    (cd "$PROJECT_ROOT" && pnpm --filter @FESTEJAR/host build) \
         || { echo "ERROR: Failed to build host frontend."; exit 1; }
     echo "      Frontend built OK."
     echo
@@ -199,7 +199,7 @@ build_android() {
     fi
 
     local apk_unsigned="${ANDROID_GEN}/app/build/outputs/apk/arm64/release/app-arm64-release-unsigned.apk"
-    local apk_signed="${PROJECT_ROOT}/KaraokeNatin-arm64-release.apk"
+    local apk_signed="${PROJECT_ROOT}/FESTEJAR-arm64-release.apk"
 
     if [ -f "$KEYSTORE" ]; then
         echo "      Signing APK..."

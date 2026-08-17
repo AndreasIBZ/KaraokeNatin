@@ -1,4 +1,4 @@
-# KaraokeNatin — Repository Map
+# FESTEJAR — Repository Map
 
 > **Updated after the implementation pass.** The two dead workspaces this map
 > originally documented (`apps/signaling-server`, `apps/web-client`) have since
@@ -14,7 +14,7 @@ paths" below) and are known to be stale.
 
 ## What this project is
 
-KaraokeNatin is a local-network karaoke party app. One machine runs the **host app**
+FESTEJAR is a local-network karaoke party app. One machine runs the **host app**
 (a Tauri 2 desktop/Android application) which plays YouTube videos full-screen and
 exposes a small embedded web server on the LAN. Guests scan a QR code shown by the
 host, which opens a **remote-control web page served directly by the host's own Rust
@@ -34,15 +34,15 @@ in the shipped product (see "Dead / orphaned paths").
 
 ## Workspace / package table
 
-pnpm workspace root: `/home/user/KaraokeNatin/package.json:1`, member globs
+pnpm workspace root: `/home/user/FESTEJAR/package.json:1`, member globs
 `apps/*` and `packages/*` (`pnpm-workspace.yaml:1-2`).
 
 | Package | Path | Type | Status |
 |---|---|---|---|
-| `@karaokenatin/host` | `apps/host` | Tauri 2 app: React+TS frontend (`src/`) + Rust backend (`src-tauri/`) | **LIVE** — the shipped product |
-| `@karaokenatin/shared` | `packages/shared` | TS-only package of protocol/state types | **LIVE** — used by `host`, `signaling-server`, and `web-client` |
-| ~~`@karaokenatin/signaling-server`~~ | *(deleted)* | Node + socket.io signaling server | **REMOVED** — was never launched by the host; Rust `signaling.rs` is and always was the live path |
-| ~~`@karaokenatin/web-client`~~ | *(deleted)* | Next.js 14 remote-control web app | **REMOVED** — was never built/bundled/served; `remote-ui/index.html` is the guest client |
+| `@FESTEJAR/host` | `apps/host` | Tauri 2 app: React+TS frontend (`src/`) + Rust backend (`src-tauri/`) | **LIVE** — the shipped product |
+| `@FESTEJAR/shared` | `packages/shared` | TS-only package of protocol/state types | **LIVE** — used by `host`, `signaling-server`, and `web-client` |
+| ~~`@FESTEJAR/signaling-server`~~ | *(deleted)* | Node + socket.io signaling server | **REMOVED** — was never launched by the host; Rust `signaling.rs` is and always was the live path |
+| ~~`@FESTEJAR/web-client`~~ | *(deleted)* | Next.js 14 remote-control web app | **REMOVED** — was never built/bundled/served; `remote-ui/index.html` is the guest client |
 
 ## Runtime architecture
 
@@ -410,7 +410,7 @@ copied into `frontendDist` (`apps/host/src-tauri/tauri.conf.json:7` points at
    - `"build:web": "cd apps/web-client && pnpm run build"` (`package.json:14`, not part of the aggregate `"build"` script)
    - `setup:packages` also still `pnpm install`s it (`package.json:17`).
 
-3. Both dead packages still declare `@karaokenatin/shared` as a
+3. Both dead packages still declare `@FESTEJAR/shared` as a
    `workspace:*` dependency, so `pnpm install` at the root continues to wire
    them into the workspace graph even though nothing in the shipped app
    depends on them.

@@ -1,6 +1,6 @@
 @echo off
 echo ============================================================
-echo  KaraokeNatin - DEEP CLEAN Android
+echo  FESTEJAR - DEEP CLEAN Android
 echo ============================================================
 
 set PROJECT_ROOT=%~dp0

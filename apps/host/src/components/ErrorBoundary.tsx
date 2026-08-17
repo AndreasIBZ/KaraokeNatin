@@ -35,7 +35,7 @@ class ErrorBoundary extends Component<Props, State> {
                     color: 'white',
                     fontFamily: 'monospace'
                 }}>
-                    <h1>⚠️ KaraokeNatin Error</h1>
+                    <h1>⚠️ FESTEJAR Error</h1>
                     <p style={{ marginTop: '20px', fontSize: '18px' }}>
                         Something went wrong loading the app.
                     </p>

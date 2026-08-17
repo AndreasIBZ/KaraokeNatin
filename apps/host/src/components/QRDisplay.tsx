@@ -1,6 +1,5 @@
 import { QRCodeSVG } from 'qrcode.react';
 import { useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 
 interface QRDisplayProps {
     url: string | null;
@@ -23,28 +22,11 @@ const QRDisplay = ({ url, roomId: _roomId }: QRDisplayProps) => {
             return;
         }
 
-        // Fallback only for the window between mount and the room being
-        // created. Shows the right host address so the panel is not blank.
-        let cancelled = false;
-        const fetchQrUrl = async () => {
-            try {
-                const qrUrl = await invoke<string>('get_qr_url');
-                if (!cancelled) setDisplayUrl(qrUrl);
-            } catch (error) {
-                console.error('Failed to get QR URL:', error);
-                try {
-                    const port = await invoke<number>('get_server_port');
-                    if (!cancelled) setDisplayUrl(`http://localhost:${port}`);
-                } catch {
-                    if (!cancelled) setDisplayUrl(window.location.origin);
-                }
-            } finally {
-                if (!cancelled) setLoading(false);
-            }
-        };
-
-        fetchQrUrl();
-        return () => { cancelled = true; };
+        // Never render a tokenless fallback QR. The server now verifies every
+        // join, so a guest could load the page from such a URL but would be
+        // rejected at Join Session.
+        setDisplayUrl('');
+        setLoading(true);
     }, [url]);
 
     const copyLink = async () => {

@@ -1,6 +1,6 @@
 # Tauri Host Application
 
-The whole KaraokeNatin application: a Tauri v2 app with a Rust backend and a React frontend, targeting Windows, Linux and Android (phone, tablet, TV).
+The whole FESTEJAR application: a Tauri v2 app with a Rust backend and a React frontend, targeting Windows, Linux and Android (phone, tablet, TV).
 
 It plays YouTube video and, from a web server embedded in its own backend, serves a remote-control page to guests on the same network. Nothing else needs to be installed or deployed.
 

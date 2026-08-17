@@ -1,10 +1,10 @@
-# 🎤 KaraokeNatin
+# 🎤 FESTEJAR
 
 **Turn any TV, projector, or Android device into a karaoke system with your phone as the remote control!**
 
-KaraokeNatin is a local-network karaoke application that lets you enjoy karaoke parties with your friends and family. No expensive equipment needed — just a computer or Android device connected to a TV and everyone's smartphones.
+FESTEJAR is a local-network karaoke application that lets you enjoy karaoke parties with your friends and family. No expensive equipment needed — just a computer or Android device connected to a TV and everyone's smartphones.
 
-> **📺 Note**: KaraokeNatin uses YouTube for karaoke video content. Please ensure you comply with [YouTube's Terms of Service](https://www.youtube.com/t/terms) when using this application.
+> **📺 Note**: FESTEJAR uses YouTube for karaoke video content. Please ensure you comply with [YouTube's Terms of Service](https://www.youtube.com/t/terms) when using this application.
 
 ## ✨ Features
 
@@ -31,7 +31,7 @@ KaraokeNatin is a local-network karaoke application that lets you enjoy karaoke 
 ## 📦 Downloads
 
 ### Pre-built Releases
-Check the [Releases](https://github.com/nojukuramu/KaraokeNatin/releases) page for:
+Check the [Releases](https://github.com/nojukuramu/FESTEJAR/releases) page for:
 - **Windows** — `.exe` (NSIS) or `.msi` installer
 - **Linux** — `.deb` or `.AppImage`
 - **Android** — `.apk` for phones, tablets, and Android TV (arm64)
@@ -41,7 +41,7 @@ Check the [Releases](https://github.com/nojukuramu/KaraokeNatin/releases) page f
 See [Building](#-building-from-source) below.
 
 ### 🌐 Nothing to install: the web version
-There is a stripped-down browser port at **https://nojukuramu.github.io/karaokenatin/** — open it
+There is a stripped-down browser port at **https://nojukuramu.github.io/FESTEJAR/** — open it
 on the TV's browser, let everyone scan the QR code, and their phones become remotes. It keeps the
 embedded player, search, queue, QR sharing and the remote, and drops the desktop-only parts
 (playlist library, scoring, mic coverage).
@@ -49,7 +49,7 @@ embedded player, search, queue, QR sharing and the remote, and drops the desktop
 The two differ where they have to. This app runs its own signalling and serves the guest UI over
 your LAN; a static site cannot, so the web version pairs peers through a public PeerJS broker and
 searches YouTube through public Piped/Invidious mirrors. Source lives in
-[`karaokenatin/`](https://github.com/nojukuramu/nojukuramu.github.io/tree/main/karaokenatin) in
+[`FESTEJAR/`](https://github.com/nojukuramu/nojukuramu.github.io/tree/main/FESTEJAR) in
 the site repo.
 
 ## 🚀 Getting Started
@@ -60,7 +60,7 @@ the site repo.
 3. Enter your name and start adding songs!
 
 ### For Hosts
-1. Install KaraokeNatin on your Windows PC, Linux desktop, or Android device
+1. Install FESTEJAR on your Windows PC, Linux desktop, or Android device
 2. Connect it to your TV or projector
 3. Launch the app and select **Host Mode**
 4. Share the QR code with your guests
@@ -100,10 +100,10 @@ build.bat sign
 pnpm run setup
 
 # 2. Build shared types
-pnpm --filter @karaokenatin/shared build
+pnpm --filter @FESTEJAR/shared build
 
 # 3. Build host frontend
-pnpm --filter @karaokenatin/host build
+pnpm --filter @FESTEJAR/host build
 
 # 4a. Windows — build Tauri desktop app
 cd apps/host
@@ -120,14 +120,14 @@ cd gen/android
 
 | Platform | File | Location |
 |----------|------|----------|
-| Windows (NSIS) | `KaraokeNatin_0.2.0_x64-setup.exe` | `apps/host/src-tauri/target/release/bundle/nsis/` |
-| Windows (MSI) | `KaraokeNatin_0.2.0_x64_en-US.msi` | `apps/host/src-tauri/target/release/bundle/msi/` |
+| Windows (NSIS) | `FESTEJAR_0.2.0_x64-setup.exe` | `apps/host/src-tauri/target/release/bundle/nsis/` |
+| Windows (MSI) | `FESTEJAR_0.2.0_x64_en-US.msi` | `apps/host/src-tauri/target/release/bundle/msi/` |
 | Android (arm64) | `app-arm64-release-unsigned.apk` | `apps/host/src-tauri/gen/android/app/build/outputs/apk/arm64/release/` |
 
 ## 🏗️ Project Structure
 
 ```
-KaraokeNatin/
+FESTEJAR/
 ├── apps/
 │   └── host/                  # The whole application
 │       ├── src/               # React frontend (Vite) — the host window
@@ -161,12 +161,12 @@ folded into the host app. See `REPOMAPPING.md` for how the pieces connect.
 - 💡 **Ideas** — Share your feature suggestions
 
 ### How to Get Started
-1. Check our [existing issues](https://github.com/nojukuramu/KaraokeNatin/issues)
+1. Check our [existing issues](https://github.com/nojukuramu/FESTEJAR/issues)
 2. Fork the repository and make your changes
 3. Submit a pull request with a clear description
 
 ### Report Issues
-Found a bug? Help us improve by reporting it on our [Issue Tracker](https://github.com/nojukuramu/KaraokeNatin/issues).
+Found a bug? Help us improve by reporting it on our [Issue Tracker](https://github.com/nojukuramu/FESTEJAR/issues).
 
 ## 📄 License
 
@@ -174,7 +174,7 @@ This project is licensed under the MIT License — see [LICENSE](LICENSE) for de
 
 ### Third-Party Licenses
 
-KaraokeNatin uses [rusty_ytdl](https://github.com/Mithronn/rusty_ytdl) for YouTube integration (MIT License). Full attribution details are in the [licenses](licenses/) directory.
+FESTEJAR uses [rusty_ytdl](https://github.com/Mithronn/rusty_ytdl) for YouTube integration (MIT License). Full attribution details are in the [licenses](licenses/) directory.
 
 ## 📚 Resources
 

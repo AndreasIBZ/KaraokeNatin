@@ -7,7 +7,9 @@ use std::time::Duration;
 use tokio::time::timeout;
 
 const YOUTUBE_VIDEOS_API_URL: &str = "https://www.googleapis.com/youtube/v3/videos";
+const YOUTUBE_OEMBED_API_URL: &str = "https://www.youtube.com/oembed";
 const YOUTUBE_EMBEDDABLE_CHECK_TIMEOUT_SECS: u64 = 10;
+const YOUTUBE_OEMBED_CHECK_TIMEOUT_SECS: u64 = 5;
 const YOUTUBE_VIDEOS_LIST_BATCH_SIZE: usize = 50;
 const UNPLAYABLE_VIDEO_MESSAGE: &str = "Esta version no se puede reproducir. Elige otra.";
 
@@ -44,12 +46,11 @@ pub fn unplayable_video_message() -> String {
     UNPLAYABLE_VIDEO_MESSAGE.to_string()
 }
 
-fn youtube_api_key() -> Result<String, String> {
+fn youtube_api_key() -> Option<String> {
     std::env::var("YOUTUBE_API_KEY")
         .ok()
         .map(|key| key.trim().to_string())
         .filter(|key| !key.is_empty())
-        .ok_or_else(|| "YOUTUBE_API_KEY is required to validate YouTube embed playback".to_string())
 }
 
 fn unique_video_ids(video_ids: &[String]) -> Vec<String> {
@@ -87,13 +88,24 @@ pub fn filter_results_by_embeddable(
         .collect()
 }
 
+async fn filter_results_by_embeddable_status(
+    results: Vec<SearchResult>,
+) -> Result<Vec<SearchResult>, String> {
+    let video_ids = results.iter().map(|result| result.id.clone()).collect::<Vec<_>>();
+    let embeddable_ids = fetch_embeddable_video_ids(&video_ids).await?;
+    Ok(filter_results_by_embeddable(results, &embeddable_ids))
+}
+
 pub async fn fetch_embeddable_video_ids(video_ids: &[String]) -> Result<HashSet<String>, String> {
     let video_ids = unique_video_ids(video_ids);
     if video_ids.is_empty() {
         return Ok(HashSet::new());
     }
 
-    let api_key = youtube_api_key()?;
+    let Some(api_key) = youtube_api_key() else {
+        return fetch_embeddable_video_ids_with_oembed(&video_ids).await;
+    };
+
     let client = reqwest::Client::new();
     let mut embeddable_ids = HashSet::new();
 
@@ -128,6 +140,49 @@ pub async fn fetch_embeddable_video_ids(video_ids: &[String]) -> Result<HashSet<
         .map_err(|e| format!("YouTube embeddable check returned invalid data: {}", e))?;
 
         embeddable_ids.extend(embeddable_ids_from_response(parsed));
+    }
+
+    Ok(embeddable_ids)
+}
+
+async fn fetch_embeddable_video_ids_with_oembed(video_ids: &[String]) -> Result<HashSet<String>, String> {
+    let client = reqwest::Client::new();
+    let mut embeddable_ids = HashSet::new();
+
+    for video_id in video_ids {
+        let video_url = format!("https://www.youtube.com/watch?v={}", video_id);
+        let response = match timeout(
+            Duration::from_secs(YOUTUBE_OEMBED_CHECK_TIMEOUT_SECS),
+            client
+                .get(YOUTUBE_OEMBED_API_URL)
+                .query(&[
+                    ("url", video_url.as_str()),
+                    ("format", "json"),
+                ])
+                .send(),
+        )
+        .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(e)) => {
+                log::warn!("[YouTube] Playable check failed for {}: {}", video_id, e);
+                continue;
+            }
+            Err(_) => {
+                log::warn!("[YouTube] Playable check timed out for {}", video_id);
+                continue;
+            }
+        };
+
+        if response.status().is_success() {
+            embeddable_ids.insert(video_id.clone());
+        } else {
+            log::info!(
+                "[YouTube] Filtering non-embeddable result {} via oEmbed HTTP {}",
+                video_id,
+                response.status()
+            );
+        }
     }
 
     Ok(embeddable_ids)
@@ -231,34 +286,41 @@ fn store_cached(key: String, results: Vec<SearchResult>) {
 }
 
 /// Search YouTube for videos matching the query using rusty_ytdl (pure Rust, no sidecar)
-pub async fn search_youtube(query: &str, limit: u32) -> Result<Vec<SearchResult>, String> {
-    // Append "karaoke" to the query to prioritize karaoke-friendly results
-    let karaoke_query = format!("{} karaoke", query);
-    let cache_key = format!("{}:{}", karaoke_query.to_lowercase(), limit);
+pub async fn search_youtube(
+    query: &str,
+    limit: u32,
+    karaoke_only: bool,
+) -> Result<Vec<SearchResult>, String> {
+    let search_query = if karaoke_only {
+        format!("{} karaoke", query)
+    } else {
+        query.to_string()
+    };
+    let mode = if karaoke_only { "karaoke" } else { "all" };
+    let cache_key = format!("{}:{}:{}", mode, search_query.to_lowercase(), limit);
 
     // Check cache first
     if let Some(results) = get_cached(&cache_key) {
-        log::info!("[YouTube] Cache hit for: {}", karaoke_query);
-        let video_ids = results.iter().map(|result| result.id.clone()).collect::<Vec<_>>();
-        let embeddable_ids = fetch_embeddable_video_ids(&video_ids).await?;
-        let filtered_results = filter_results_by_embeddable(results, &embeddable_ids);
+        log::info!("[YouTube] Cache hit for: {}", search_query);
+        let filtered_results = filter_results_by_embeddable_status(results).await?;
         store_cached(cache_key, filtered_results.clone());
         return Ok(filtered_results);
     }
 
-    log::info!("[YouTube] Cache miss, searching with rusty_ytdl for: {}", karaoke_query);
+    log::info!("[YouTube] Cache miss, searching with rusty_ytdl for: {}", search_query);
 
     let youtube = YouTube::new().map_err(|e| format!("Failed to create YouTube client: {}", e))?;
 
+    let raw_limit = limit.saturating_mul(3).clamp(limit, 30);
     let search_options = SearchOptions {
-        limit: limit as u64,
+        limit: raw_limit as u64,
         search_type: SearchType::Video,
         safe_search: false,
     };
 
     let search_results = timeout(
         Duration::from_secs(10),
-        youtube.search(&karaoke_query, Some(&search_options))
+        youtube.search(&search_query, Some(&search_options))
     )
     .await
     .map_err(|_| "YouTube search timed out after 10 seconds".to_string())?
@@ -299,12 +361,11 @@ pub async fn search_youtube(query: &str, limit: u32) -> Result<Vec<SearchResult>
         }
     }
 
-    let video_ids = results.iter().map(|result| result.id.clone()).collect::<Vec<_>>();
-    let embeddable_ids = fetch_embeddable_video_ids(&video_ids).await?;
-    let results = filter_results_by_embeddable(results, &embeddable_ids);
+    let mut results = filter_results_by_embeddable_status(results).await?;
+    results.truncate(limit as usize);
 
     log::info!(
-        "[YouTube] Found {} embeddable results via rusty_ytdl, caching...",
+        "[YouTube] Found {} playable results via rusty_ytdl, caching...",
         results.len()
     );
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useRoomState } from '../hooks/useRoomState';
+import type { RoomState } from '../hooks/useRoomState';
 import { useMicCoverage, coverageToScore } from '../hooks/useMicCoverage';
 import { useWakeLock } from '../hooks/useWakeLock';
 import { invoke } from '@tauri-apps/api/core';
@@ -11,14 +12,16 @@ declare global {
     interface Window {
         onYouTubeIframeAPIReady: () => void;
         YT: any;
+        __KARAOKE_SNAPSHOT_PLAYER_POSITION__?: () => Promise<void>;
     }
 }
 
 interface YouTubePlayer {
-    loadVideoById(videoId: string): void;
+    loadVideoById(videoId: string | { videoId: string; startSeconds?: number }): void;
     playVideo(): void;
     pauseVideo(): void;
-    stopVideo(): void;
+    stopVideo?: () => void;
+    clearVideo?: () => void;
     getCurrentTime(): number;
     getDuration(): number;
     getPlayerState(): number;
@@ -30,6 +33,21 @@ interface YouTubePlayer {
     isMuted(): boolean;
     seekTo(seconds: number, allowSeekAhead: boolean): void;
     destroy(): void;
+}
+
+function stopAndClearPlayer(player: YouTubePlayer | null) {
+    if (!player) return;
+
+    try {
+        if (typeof player.stopVideo === 'function') {
+            player.stopVideo();
+        }
+        if (typeof player.clearVideo === 'function') {
+            player.clearVideo();
+        }
+    } catch (error) {
+        console.warn('[Player] Failed to stop and clear YouTube player:', error);
+    }
 }
 
 // Icons
@@ -76,23 +94,37 @@ const Icons = {
     )
 };
 
-const Player = () => {
+interface PlayerProps {
+    roomState?: RoomState | null;
+    displayOnly?: boolean;
+    hideFullscreenButton?: boolean;
+}
+
+const PLAYER_HANDOFF_STORAGE_KEY = 'karaoke_player_handoff';
+const PLAYER_HANDOFF_TTL_MS = 15_000;
+
+const Player = ({ roomState: providedRoomState, displayOnly = false, hideFullscreenButton = false }: PlayerProps) => {
     const playerRef = useRef<HTMLDivElement>(null);
     const containerRef = useRef<HTMLDivElement | null>(null);
     const ytPlayerRef = useRef<YouTubePlayer | null>(null);
     const timePollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
-    const { roomState } = useRoomState();
+    const { roomState: internalRoomState } = useRoomState();
+    const roomState = providedRoomState !== undefined ? providedRoomState : internalRoomState;
 
     // Keep the display awake while a song is playing. The host is typically
     // unattended on a TV, so letting the screen sleep mid-song is a real
     // failure rather than a nicety.
-    useWakeLock(roomState?.player.status === 'playing');
+    useWakeLock(!displayOnly && roomState?.player.status === 'playing');
     const [isAPIReady, setIsAPIReady] = useState(false);
+    const [isPlayerReady, setIsPlayerReady] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const currentSongRef = useRef(roomState?.player.currentSong);
+    const loadedSongIdRef = useRef<string | null>(null);
     const [showScoring, setShowScoring] = useState(false);
     const [currentScore, setCurrentScore] = useState(0);
     const [lastSongTitle, setLastSongTitle] = useState('');
+    const [playbackNotice, setPlaybackNotice] = useState<string | null>(null);
+    const playerClearedRef = useRef(false);
 
     // Real scoring: coverage of the song's runtime with mic-level input.
     // start()/stop() are referentially stable across renders (see the hook),
@@ -194,6 +226,7 @@ const Player = () => {
         }) as unknown as YouTubePlayer;
 
         return () => {
+            setIsPlayerReady(false);
             if (timePollingRef.current) {
                 clearInterval(timePollingRef.current);
                 timePollingRef.current = null;
@@ -206,16 +239,23 @@ const Player = () => {
     // Handle player ready
     const handlePlayerReady = () => {
         console.log('[Player] YouTube player ready');
-        startTimePolling();
+        setIsPlayerReady(true);
+        if (!displayOnly) startTimePolling();
     };
 
     // Handle player state changes
     const handlePlayerStateChange = (event: any) => {
+        if (displayOnly) return;
+
         const state = event.data;
         let status = 'idle';
 
         switch (state) {
             case window.YT.PlayerState.PLAYING:
+                if (!currentSongRef.current) {
+                    stopOrphanedPlayback('playing without current song');
+                    return;
+                }
                 status = 'playing';
                 // Start mic coverage tracking the first time this song
                 // actually starts playing (not on every PLAYING transition,
@@ -229,18 +269,34 @@ const Player = () => {
                 }
                 break;
             case window.YT.PlayerState.PAUSED:
+                if (!currentSongRef.current) {
+                    void updatePlayerState('idle');
+                    return;
+                }
                 status = 'paused';
                 break;
             case window.YT.PlayerState.BUFFERING:
+                if (!currentSongRef.current) {
+                    stopOrphanedPlayback('buffering without current song');
+                    return;
+                }
                 status = 'loading';
                 break;
             case window.YT.PlayerState.CUED:
+                if (!currentSongRef.current) {
+                    stopOrphanedPlayback('cued without current song');
+                    return;
+                }
                 // Video is ready, auto-play it
                 console.log('[Player] Video cued, starting playback');
                 ytPlayerRef.current?.playVideo();
                 status = 'loading';
                 break;
             case window.YT.PlayerState.ENDED:
+                if (!currentSongRef.current) {
+                    void updatePlayerState('idle');
+                    return;
+                }
                 status = 'idle';
                 // Show scoring overlay before skipping
                 handleSongEnded();
@@ -250,22 +306,38 @@ const Player = () => {
         updatePlayerState(status);
     };
 
+    function stopOrphanedPlayback(reason: string) {
+        console.log('[Player] Stopping orphaned YouTube playback:', reason);
+        playerClearedRef.current = true;
+        loadedSongIdRef.current = null;
+        setPlaybackNotice(null);
+        stopAndClearPlayer(ytPlayerRef.current);
+        if (!displayOnly) void updatePlayerState('idle');
+    }
+
     function handlePlayerError(event: any) {
         const errorCode = Number(event?.data);
         console.warn('[Player] YouTube playback error:', errorCode);
+        if (displayOnly) return;
         void updatePlayerState('error');
 
         if ([100, 101, 150].includes(errorCode)) {
-            void invoke('process_command', {
-                command: { type: 'SKIP' },
-            }).catch((error) => {
-                console.error('[Player] Failed to skip after YouTube error:', error);
-            });
+            const failedSong = currentSongRef.current;
+            setPlaybackNotice('Esta version no se puede reproducir. Saltando...');
+            window.setTimeout(() => {
+                if (currentSongRef.current?.id !== failedSong?.id) return;
+                void invoke('process_command', {
+                    command: { type: 'SKIP' },
+                }).catch((error) => {
+                    console.error('[Player] Failed to skip after YouTube error:', error);
+                });
+            }, 1200);
         }
     }
 
     // Update player state in Rust backend
     async function updatePlayerState(status?: string, currentTime?: number, duration?: number) {
+        if (displayOnly) return;
         try {
             await invoke('update_player_state', {
                 status: status || undefined,
@@ -277,8 +349,48 @@ const Player = () => {
         }
     }
 
+    const snapshotPlayerPosition = useCallback(async () => {
+        if (displayOnly || !isPlayerReady || !ytPlayerRef.current || !currentSongRef.current) return;
+
+        try {
+            const currentTime = ytPlayerRef.current.getCurrentTime();
+            const duration = ytPlayerRef.current.getDuration();
+            const playerState = ytPlayerRef.current.getPlayerState();
+            const status =
+                playerState === window.YT?.PlayerState?.PLAYING ? 'playing' :
+                playerState === window.YT?.PlayerState?.PAUSED ? 'paused' :
+                playerState === window.YT?.PlayerState?.BUFFERING ? 'loading' :
+                undefined;
+
+            if (Number.isFinite(currentTime) && currentTime > 0) {
+                localStorage.setItem(PLAYER_HANDOFF_STORAGE_KEY, JSON.stringify({
+                    songId: currentSongRef.current.id,
+                    currentTime,
+                    duration: Number.isFinite(duration) ? duration : undefined,
+                    status,
+                    capturedAt: Date.now(),
+                }));
+                await updatePlayerState(status, currentTime, Number.isFinite(duration) ? duration : undefined);
+            }
+        } catch (error) {
+            console.warn('[Player] Failed to snapshot player position:', error);
+        }
+    }, [displayOnly, isPlayerReady]);
+
+    useEffect(() => {
+        if (displayOnly) return;
+        window.__KARAOKE_SNAPSHOT_PLAYER_POSITION__ = snapshotPlayerPosition;
+
+        return () => {
+            if (window.__KARAOKE_SNAPSHOT_PLAYER_POSITION__ === snapshotPlayerPosition) {
+                delete window.__KARAOKE_SNAPSHOT_PLAYER_POSITION__;
+            }
+        };
+    }, [displayOnly, snapshotPlayerPosition]);
+
     // Poll current time - throttle broadcasts to reduce network traffic
     const startTimePolling = () => {
+        if (displayOnly) return;
         // Clear any existing interval to prevent leaks
         if (timePollingRef.current) {
             clearInterval(timePollingRef.current);
@@ -292,8 +404,9 @@ const Player = () => {
                     const duration = ytPlayerRef.current.getDuration();
                     if (currentTime > 0) {
                         const now = Date.now();
-                        // Only broadcast time updates every 5 seconds to reduce traffic
-                        if (now - lastBroadcastTime >= 5000) {
+                        // Keep the transport clock close enough that moving the
+                        // player between windows does not replay a stale segment.
+                        if (now - lastBroadcastTime >= 1000) {
                             lastBroadcastTime = now;
                             updatePlayerState(undefined, currentTime, duration);
                         }
@@ -310,6 +423,8 @@ const Player = () => {
     // this song (denied, unavailable, errored), skip straight to the next
     // song instead of showing a score.
     const handleSongEnded = useCallback(async () => {
+        if (displayOnly) return;
+
         // Save the song title before it changes
         const songTitle = roomState?.player.currentSong?.title || '';
         setLastSongTitle(songTitle);
@@ -343,10 +458,11 @@ const Player = () => {
                 console.error('[Player] Failed to skip song:', skipError);
             }
         }
-    }, [roomState?.player.currentSong?.title, micStop]);
+    }, [displayOnly, roomState?.player.currentSong?.title, micStop]);
 
     // Called when scoring animation completes
     const handleScoringComplete = useCallback(async () => {
+        if (displayOnly) return;
         setShowScoring(false);
         try {
             await invoke('process_command', {
@@ -355,57 +471,120 @@ const Player = () => {
         } catch (error) {
             console.error('[Player] Failed to skip song:', error);
         }
-    }, []);
+    }, [displayOnly]);
 
     // Load new song when current song changes
     useEffect(() => {
         const currentSong = roomState?.player.currentSong;
 
-        if (currentSong && currentSong.id !== currentSongRef.current?.id) {
+        if (currentSong && currentSong.id !== loadedSongIdRef.current) {
             currentSongRef.current = currentSong;
+            playerClearedRef.current = false;
+            setPlaybackNotice(null);
 
             // A new song is loading. If mic capture from the previous song
             // is still running (e.g. it was manually skipped before
             // handleSongEnded ever fired), tear it down now so the mic
             // indicator doesn't leak into the next song.
-            if (micAttemptedRef.current) {
+            if (!displayOnly && micAttemptedRef.current) {
                 micAttemptedRef.current = false;
                 micActiveRef.current = false;
                 void micStop();
             }
 
-            if (ytPlayerRef.current) {
+            if (ytPlayerRef.current && isPlayerReady) {
                 console.log('[Player] Loading video:', currentSong.youtubeId);
-                // loadVideoById auto-plays by default in YouTube API
-                ytPlayerRef.current.loadVideoById(currentSong.youtubeId);
+                const startSeconds = resolveStartSeconds(currentSong.id, roomState?.player.currentTime, roomState?.player.duration);
+                ytPlayerRef.current.loadVideoById(
+                    startSeconds === undefined
+                        ? currentSong.youtubeId
+                        : { videoId: currentSong.youtubeId, startSeconds }
+                );
+                loadedSongIdRef.current = currentSong.id;
             }
-        } else if (!currentSong && currentSongRef.current) {
+        } else if (!currentSong && !playerClearedRef.current) {
             // Song was removed (queue empty after skip) - stop the player
             currentSongRef.current = null;
-            if (micAttemptedRef.current) {
+            loadedSongIdRef.current = null;
+            playerClearedRef.current = true;
+            setPlaybackNotice(null);
+            if (!displayOnly && micAttemptedRef.current) {
                 micAttemptedRef.current = false;
                 micActiveRef.current = false;
                 void micStop();
             }
             if (ytPlayerRef.current) {
                 console.log('[Player] Stopping video - no current song');
-                ytPlayerRef.current.stopVideo();
+                stopAndClearPlayer(ytPlayerRef.current);
             }
         }
-    }, [roomState?.player.currentSong, micStop]);
+    }, [displayOnly, isPlayerReady, roomState?.player.currentSong, roomState?.player.currentTime, micStop]);
+
+    function resolveStartSeconds(songId: string, fallbackTime?: number, fallbackDuration?: number) {
+        let startSeconds = fallbackTime && fallbackTime > 1 ? fallbackTime : undefined;
+
+        try {
+            const rawHandoff = localStorage.getItem(PLAYER_HANDOFF_STORAGE_KEY);
+            if (!rawHandoff) return startSeconds;
+
+            const handoff = JSON.parse(rawHandoff) as {
+                songId?: string;
+                currentTime?: number;
+                duration?: number;
+                status?: string;
+                capturedAt?: number;
+            };
+            localStorage.removeItem(PLAYER_HANDOFF_STORAGE_KEY);
+
+            if (
+                handoff.songId !== songId ||
+                typeof handoff.currentTime !== 'number' ||
+                typeof handoff.capturedAt !== 'number' ||
+                Date.now() - handoff.capturedAt > PLAYER_HANDOFF_TTL_MS
+            ) {
+                return startSeconds;
+            }
+
+            startSeconds = handoff.currentTime;
+            if (handoff.status === 'playing') {
+                startSeconds += (Date.now() - handoff.capturedAt) / 1000;
+            }
+
+            const duration = handoff.duration || fallbackDuration;
+            if (duration && duration > 2) {
+                startSeconds = Math.min(startSeconds, duration - 1);
+            }
+            return Math.max(0, startSeconds);
+        } catch (error) {
+            console.warn('[Player] Failed to read player handoff:', error);
+            return startSeconds;
+        }
+    }
 
     // Handle player status changes from room state
     useEffect(() => {
-        if (!ytPlayerRef.current) return;
+        if (!ytPlayerRef.current || !isPlayerReady) return;
 
         const status = roomState?.player.status;
+        const currentSong = roomState?.player.currentSong;
+
+        if (!currentSong) {
+            if (!playerClearedRef.current) {
+                currentSongRef.current = null;
+                loadedSongIdRef.current = null;
+                playerClearedRef.current = true;
+                setPlaybackNotice(null);
+                stopAndClearPlayer(ytPlayerRef.current);
+            }
+            return;
+        }
 
         if (status === 'playing') {
             ytPlayerRef.current.playVideo();
         } else if (status === 'paused') {
             ytPlayerRef.current.pauseVideo();
         }
-    }, [roomState?.player.status]);
+    }, [isPlayerReady, roomState?.player.status, roomState?.player.currentSong]);
 
     // Apply volume and mute from room state.
     //
@@ -417,24 +596,24 @@ const Player = () => {
 
     useEffect(() => {
         const player = ytPlayerRef.current;
-        if (!player || volume === undefined) return;
+        if (!player || !isPlayerReady || volume === undefined) return;
         try {
             player.setVolume(Math.max(0, Math.min(100, volume)));
         } catch (e) {
             console.warn('[Player] setVolume failed:', e);
         }
-    }, [volume, isAPIReady]);
+    }, [volume, isPlayerReady]);
 
     useEffect(() => {
         const player = ytPlayerRef.current;
-        if (!player || isMuted === undefined) return;
+        if (!player || !isPlayerReady || isMuted === undefined) return;
         try {
             if (isMuted) player.mute();
             else player.unMute();
         } catch (e) {
             console.warn('[Player] mute toggle failed:', e);
         }
-    }, [isMuted, isAPIReady]);
+    }, [isMuted, isPlayerReady]);
 
     // Apply externally requested seeks.
     //
@@ -447,7 +626,7 @@ const Player = () => {
 
     useEffect(() => {
         const player = ytPlayerRef.current;
-        if (!player || stateTime === undefined) return;
+        if (!player || !isPlayerReady || stateTime === undefined) return;
         try {
             const actual = player.getCurrentTime?.();
             if (typeof actual !== 'number') return;
@@ -457,7 +636,7 @@ const Player = () => {
         } catch (e) {
             console.warn('[Player] seek failed:', e);
         }
-    }, [stateTime]);
+    }, [stateTime, isPlayerReady]);
 
     const currentSong = roomState?.player.currentSong;
 
@@ -502,6 +681,26 @@ const Player = () => {
                             </p>
                         </div>
                     )}
+                    {playbackNotice && (
+                        <div style={{
+                            position: 'absolute',
+                            left: '50%',
+                            bottom: 24,
+                            transform: 'translateX(-50%)',
+                            zIndex: 20,
+                            maxWidth: 'min(520px, calc(100% - 32px))',
+                            padding: '12px 16px',
+                            borderRadius: 8,
+                            background: 'rgba(0, 0, 0, 0.82)',
+                            color: '#fff',
+                            fontSize: 14,
+                            fontWeight: 600,
+                            textAlign: 'center',
+                            boxShadow: '0 12px 32px rgba(0, 0, 0, 0.35)'
+                        }}>
+                            {playbackNotice}
+                        </div>
+                    )}
                     {/* Overlay idle message on top when no song */}
                 </>
             )}
@@ -527,20 +726,22 @@ const Player = () => {
                     flexDirection: 'column'
                 } : undefined}
             >
-                <button
-                    className="btn-icon btn-fullscreen"
-                    onClick={toggleFullscreen}
-                    title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-                    tabIndex={0}
-                    style={isFullscreen ? {
-                        position: 'absolute',
-                        top: 16,
-                        right: 16,
-                        zIndex: 100
-                    } : undefined}
-                >
-                    {isFullscreen ? Icons.minimize : Icons.maximize}
-                </button>
+                {!hideFullscreenButton && (
+                    <button
+                        className="btn-icon btn-fullscreen"
+                        onClick={toggleFullscreen}
+                        title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                        tabIndex={0}
+                        style={isFullscreen ? {
+                            position: 'absolute',
+                            top: 16,
+                            right: 16,
+                            zIndex: 100
+                        } : undefined}
+                    >
+                        {isFullscreen ? Icons.minimize : Icons.maximize}
+                    </button>
+                )}
 
                 <div className="player-inner" style={isFullscreen ? { flex: 1 } : undefined}>
                     {playerContent}

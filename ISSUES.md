@@ -59,7 +59,7 @@ Note this is a *different* defect from 1.1 — the command exists and is correct
 > **RESOLVED** — the real cause was worse than "never built": `tsconfig` had no `rootDir`, so output landed at `dist/src/index.js` while `main` pointed at `dist/index.js`. Fixed, plus a `prepare` script and a `build:shared` step in `setup`.
 `packages/shared/package.json` declares `"main": "./dist/index.js"` and `"types": "./dist/index.d.ts"`. `dist/` is gitignored (`.gitignore:9`) and is not present in the tree. The root `setup:packages` script runs `pnpm install` in `packages/shared` but never `pnpm build`.
 
-`apps/host` and `apps/web-client` both import `@karaokenatin/shared` at type level (`apps/host/src/hooks/usePeerHost.ts:5`, `useRoomState.ts:3`, `lib/commands.ts:2`, `components/Queue.tsx:1`, `apps/web-client/components/NowPlaying.tsx:1`). There is no Vite alias (`apps/host/vite.config.ts` has no `resolve.alias`) and no Next `transpilePackages` (`apps/web-client/next.config.mjs`), so resolution goes through `main`/`types` — which do not exist until `shared` is built.
+`apps/host` and `apps/web-client` both import `@FESTEJAR/shared` at type level (`apps/host/src/hooks/usePeerHost.ts:5`, `useRoomState.ts:3`, `lib/commands.ts:2`, `components/Queue.tsx:1`, `apps/web-client/components/NowPlaying.tsx:1`). There is no Vite alias (`apps/host/vite.config.ts` has no `resolve.alias`) and no Next `transpilePackages` (`apps/web-client/next.config.mjs`), so resolution goes through `main`/`types` — which do not exist until `shared` is built.
 
 Consequence: `pnpm run setup && pnpm run build:host` fails at the `tsc` step on a fresh clone. Anyone who has built before has a stale `dist/` on disk masking it.
 
@@ -289,14 +289,14 @@ Vendoring these into the binary via `include_str!`/`include_bytes!` (the same me
 
 > **RESOLVED** — `QUICK_START.md` and `DEPLOYMENT.md` rewritten, README tree corrected, versions aligned, yt-dlp license files removed.
 - `QUICK_START.md:15-19` and `apps/host/README.md:48-56` instruct the user to download `yt-dlp` binaries. `CHANGELOG.md:29` records that yt-dlp was migrated to native Rust (`rusty_ytdl`, `Cargo.toml:37`) and no external binary is used. The `licenses/yt-dlp-LICENSE.txt` and `licenses/yt-dlp-THIRD_PARTY_LICENSES.txt` files (4473 lines) are likewise leftovers.
-- `QUICK_START.md:7`, `DEPLOYMENT.md:71`, `RUN_INSTRUCTIONS.md:12` hardcode `C:\Users\Noju\Projects\KaraokeNatin`.
+- `QUICK_START.md:7`, `DEPLOYMENT.md:71`, `RUN_INSTRUCTIONS.md:12` hardcode `C:\Users\Noju\Projects\FESTEJAR`.
 - `QUICK_START.md:8` says `npm install`; the repo is pnpm-only (workspace protocol deps, `pnpm-lock.yaml`).
 - Root `package.json` is `0.2.0-beta`; `apps/host/package.json` and `CHANGELOG.md` say `0.2.0`.
 
 ### 4.8 Committed artifacts and hygiene
 | Path | Note |
 |---|---|
-| `KaraokeNatin-arm64-release.apk.idsig` | 262 KB, root. `.gitignore:42` lists `KaraokeNatin-*.idsig` but the file was committed **before** the rule, so it stays tracked. |
+| `FESTEJAR-arm64-release.apk.idsig` | 262 KB, root. `.gitignore:42` lists `FESTEJAR-*.idsig` but the file was committed **before** the rule, so it stays tracked. |
 | `apps/host/src-tauri/error_log.txt`, `error_log_2.txt` | 179 + 251 lines of `cargo check` output from a Tauri v1 → v2 migration (`tauri::api::process` no longer exists). Historical, not current. |
 | `apps/host/src-tauri/gen/android/**` | 44 tracked files including `gradle-wrapper.jar` and **built Vite output** (`app/src/main/assets/assets/index-DXbmAp6d.js`, `index-DXLR6tfF.css`). Not in `.gitignore` at all. |
 | `apps/web-client/tsconfig.tsbuildinfo` | Build artifact. |

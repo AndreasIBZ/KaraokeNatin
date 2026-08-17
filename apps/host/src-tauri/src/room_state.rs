@@ -44,16 +44,66 @@ fn save_playlists_to_file(path: &PathBuf, playlists: &[PlaylistCollection]) {
 pub struct Song {
     pub id: String,
     #[serde(rename = "youtubeId")]
+    #[serde(default)]
     pub youtube_id: String,
     pub title: String,
     pub artist: String,
+    #[serde(default)]
     pub duration: u32,
     #[serde(rename = "thumbnailUrl")]
+    #[serde(default)]
     pub thumbnail_url: String,
     #[serde(rename = "addedBy")]
+    #[serde(default)]
     pub added_by: String,
     #[serde(rename = "addedAt")]
+    #[serde(default)]
     pub added_at: i64,
+    #[serde(default, rename = "resolutionStatus")]
+    pub resolution_status: Option<ResolutionStatus>,
+    #[serde(default)]
+    pub source: Option<SongSource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ResolutionStatus {
+    Resolved,
+    Unresolved,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase", tag = "type")]
+pub enum SongSource {
+    Local,
+    Spotify {
+        #[serde(default, rename = "playlistId")]
+        playlist_id: Option<String>,
+        #[serde(default, rename = "trackId")]
+        track_id: Option<String>,
+        #[serde(default)]
+        url: Option<String>,
+    },
+    Youtube {
+        #[serde(default, rename = "videoId")]
+        video_id: Option<String>,
+        #[serde(default)]
+        url: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase", tag = "type")]
+pub enum PlaylistSource {
+    Local,
+    Spotify {
+        #[serde(rename = "playlistId")]
+        playlist_id: String,
+        #[serde(rename = "originalUrl")]
+        original_url: String,
+        #[serde(rename = "importedAt")]
+        imported_at: i64,
+    },
 }
 
 /// Collection visibility
@@ -71,6 +121,10 @@ pub struct PlaylistCollection {
     pub name: String,
     pub visibility: CollectionVisibility,
     pub songs: Vec<Song>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub source: Option<PlaylistSource>,
     #[serde(rename = "createdAt")]
     pub created_at: i64,
     #[serde(rename = "updatedAt")]
@@ -141,6 +195,8 @@ impl PlaylistStore {
                                         name: "Default Playlist".to_string(),
                                         visibility: CollectionVisibility::Public,
                                         songs,
+                                        description: None,
+                                        source: Some(PlaylistSource::Local),
                                         created_at: now,
                                         updated_at: now,
                                     };
@@ -174,6 +230,52 @@ impl PlaylistStore {
         self.playlists.read().clone()
     }
 
+    pub fn find_collection_by_spotify_playlist_id(&self, playlist_id: &str) -> Option<String> {
+        self.playlists
+            .read()
+            .iter()
+            .find_map(|collection| match &collection.source {
+                Some(PlaylistSource::Spotify { playlist_id: existing_id, .. }) if existing_id == playlist_id => {
+                    Some(collection.id.clone())
+                }
+                _ => None,
+            })
+    }
+
+    pub fn upsert_imported_collection(&self, mut collection: PlaylistCollection, update_existing: bool) -> Result<String, String> {
+        if let Some(PlaylistSource::Spotify { playlist_id, .. }) = &collection.source {
+            if let Some(existing_id) = self.find_collection_by_spotify_playlist_id(playlist_id) {
+                if !update_existing {
+                    return Err("Esta playlist ya esta importada.".to_string());
+                }
+                collection.id = existing_id.clone();
+                let replaced = {
+                    let mut playlists = self.playlists.write();
+                    if let Some(existing) = playlists.iter_mut().find(|c| c.id == existing_id) {
+                        collection.created_at = existing.created_at;
+                        *existing = collection;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if replaced {
+                    self.save();
+                    return Ok(existing_id);
+                }
+                return Err("Collection not found".to_string());
+            }
+        }
+
+        let id = collection.id.clone();
+        {
+            let mut playlists = self.playlists.write();
+            playlists.push(collection);
+        }
+        self.save();
+        Ok(id)
+    }
+
     /// Create a new playlist collection, returns its ID
     pub fn create_collection(&self, name: String, visibility: CollectionVisibility) -> String {
         let now = chrono::Utc::now().timestamp_millis();
@@ -185,6 +287,8 @@ impl PlaylistStore {
                 name,
                 visibility,
                 songs: Vec::new(),
+                description: None,
+                source: Some(PlaylistSource::Local),
                 created_at: now,
                 updated_at: now,
             });
@@ -208,6 +312,15 @@ impl PlaylistStore {
             self.save();
         }
         success
+    }
+
+    pub fn collection_video_ids(&self, collection_id: &str) -> Vec<String> {
+        self.playlists
+            .read()
+            .iter()
+            .find(|c| c.id == collection_id)
+            .map(|c| c.songs.iter().map(|s| s.youtube_id.clone()).collect())
+            .unwrap_or_default()
     }
 
     /// Rename a playlist collection
@@ -286,12 +399,22 @@ impl PlaylistStore {
         success
     }
 
-    /// Copy a song from a collection, returning a new Song for the queue
+    pub fn collection_song_youtube_id(&self, collection_id: &str, song_id: &str) -> Option<String> {
+        self.playlists
+            .read()
+            .iter()
+            .find(|c| c.id == collection_id)
+            .and_then(|c| c.songs.iter().find(|s| s.id == song_id))
+            .and_then(|s| if s.youtube_id.is_empty() { None } else { Some(s.youtube_id.clone()) })
+    }
+
+    /// Copy a resolved YouTube song from a collection, returning a new Song for the queue.
     pub fn clone_song_for_queue(&self, collection_id: &str, song_id: &str) -> Option<Song> {
         let pl = self.playlists.read();
         pl.iter()
             .find(|c| c.id == collection_id)
             .and_then(|c| c.songs.iter().find(|s| s.id == song_id))
+            .filter(|song| !song.youtube_id.is_empty())
             .map(|song| Song {
                 id: uuid::Uuid::new_v4().to_string(),
                 youtube_id: song.youtube_id.clone(),
@@ -301,6 +424,8 @@ impl PlaylistStore {
                 thumbnail_url: song.thumbnail_url.clone(),
                 added_by: song.added_by.clone(),
                 added_at: chrono::Utc::now().timestamp_millis(),
+                resolution_status: Some(ResolutionStatus::Resolved),
+                source: song.source.clone(),
             })
     }
 
@@ -320,7 +445,11 @@ impl PlaylistStore {
         #[derive(Deserialize)]
         struct ExportedCollection {
             #[allow(dead_code)]
-            karaokenatin: String,
+            karaokenatin: Option<String>,
+            #[allow(dead_code)]
+            format: Option<String>,
+            #[allow(dead_code)]
+            version: Option<u32>,
             collection: ImportedCollectionData,
         }
         #[derive(Deserialize)]
@@ -332,6 +461,12 @@ impl PlaylistStore {
 
         let exported: ExportedCollection = serde_json::from_str(data)
             .map_err(|e| format!("Invalid collection data: {}", e))?;
+        if exported.karaokenatin.is_none() && exported.format.as_deref() != Some("karaoke-playlist") {
+            return Err("El archivo no es una playlist compatible con FESTEJAR.".to_string());
+        }
+        if matches!(exported.version, Some(version) if version != 1) {
+            return Err("Version de playlist no soportada.".to_string());
+        }
         
         let now = chrono::Utc::now().timestamp_millis();
         let id = uuid::Uuid::new_v4().to_string();
@@ -363,6 +498,8 @@ impl PlaylistStore {
                 name: final_name,
                 visibility: exported.collection.visibility,
                 songs,
+                description: None,
+                source: Some(PlaylistSource::Local),
                 created_at: now,
                 updated_at: now,
             });
@@ -378,28 +515,214 @@ impl PlaylistStore {
             .ok_or_else(|| "Collection not found".to_string())?;
         
         #[derive(Serialize)]
-        struct ExportedCollection<'a> {
-            karaokenatin: &'a str,
-            collection: ExportedCollectionData<'a>,
+        struct KaraokePlaylistFile<'a> {
+            format: &'a str,
+            version: u32,
+            generator: &'a str,
+            name: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            description: &'a Option<String>,
+            source: KaraokePlaylistSource,
+            tracks: Vec<KaraokePlaylistTrack>,
         }
         #[derive(Serialize)]
-        struct ExportedCollectionData<'a> {
-            name: &'a str,
-            visibility: &'a CollectionVisibility,
-            songs: &'a [Song],
+        struct KaraokePlaylistTrack {
+            title: String,
+            artists: Vec<String>,
+            #[serde(skip_serializing_if = "Option::is_none", rename = "duration_ms")]
+            duration_ms: Option<u32>,
+            source: KaraokeTrackSource,
+        }
+        #[derive(Serialize)]
+        struct KaraokePlaylistSource {
+            #[serde(rename = "type")]
+            source_type: String,
+            #[serde(skip_serializing_if = "Option::is_none", rename = "playlist_id")]
+            playlist_id: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none", rename = "original_url")]
+            original_url: Option<String>,
+        }
+        #[derive(Serialize)]
+        struct KaraokeTrackSource {
+            #[serde(rename = "type")]
+            source_type: String,
+            #[serde(skip_serializing_if = "Option::is_none", rename = "playlist_id")]
+            playlist_id: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none", rename = "track_id")]
+            track_id: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            url: Option<String>,
         }
 
-        let export = ExportedCollection {
-            karaokenatin: "1.0",
-            collection: ExportedCollectionData {
-                name: &col.name,
-                visibility: &col.visibility,
-                songs: &col.songs,
+        let tracks = col.songs.iter().map(|song| {
+            let source = match song.source.clone().unwrap_or(SongSource::Local) {
+                SongSource::Spotify { playlist_id, track_id, url } => KaraokeTrackSource {
+                    source_type: "spotify".to_string(),
+                    playlist_id,
+                    track_id,
+                    url,
+                },
+                SongSource::Youtube { video_id, url } => KaraokeTrackSource {
+                    source_type: "youtube".to_string(),
+                    playlist_id: None,
+                    track_id: video_id,
+                    url,
+                },
+                SongSource::Local => KaraokeTrackSource {
+                    source_type: "local".to_string(),
+                    playlist_id: None,
+                    track_id: None,
+                    url: None,
+                },
+            };
+            KaraokePlaylistTrack {
+                title: song.title.clone(),
+                artists: if song.artist.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    song.artist.split(',').map(|artist| artist.trim().to_string()).collect()
+                },
+                duration_ms: if song.duration == 0 { None } else { Some(song.duration * 1000) },
+                source,
+            }
+        }).collect();
+        let source = match col.source.clone().unwrap_or(PlaylistSource::Local) {
+            PlaylistSource::Spotify { playlist_id, original_url, .. } => KaraokePlaylistSource {
+                source_type: "spotify".to_string(),
+                playlist_id: Some(playlist_id),
+                original_url: Some(original_url),
             },
+            PlaylistSource::Local => KaraokePlaylistSource {
+                source_type: "local".to_string(),
+                playlist_id: None,
+                original_url: None,
+            },
+        };
+
+        let export = KaraokePlaylistFile {
+            format: "karaoke-playlist",
+            version: 1,
+            generator: "FESTEJAR",
+            name: &col.name,
+            description: &col.description,
+            source,
+            tracks,
         };
         
         serde_json::to_string_pretty(&export)
             .map_err(|e| format!("Failed to serialize: {}", e))
+    }
+}
+
+// ============================================================
+// SessionHistoryStore — current host session song history
+// ============================================================
+
+pub struct SessionHistoryStore {
+    base_dir: Arc<RwLock<Option<PathBuf>>>,
+    session_id: String,
+    started_at: i64,
+    exported_song_count: Arc<RwLock<usize>>,
+    songs: Arc<RwLock<Vec<Song>>>,
+}
+
+impl SessionHistoryStore {
+    pub fn new() -> Self {
+        Self {
+            base_dir: Arc::new(RwLock::new(None)),
+            session_id: uuid::Uuid::new_v4().to_string(),
+            started_at: chrono::Utc::now().timestamp_millis(),
+            exported_song_count: Arc::new(RwLock::new(0)),
+            songs: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+
+    pub fn initialize(&self, app_data_dir: PathBuf) {
+        let mut dir = app_data_dir;
+        dir.push("session-history");
+        if let Err(e) = fs::create_dir_all(&dir) {
+            log::error!("Failed to create session history dir {:?}: {}", dir, e);
+            return;
+        }
+        *self.base_dir.write() = Some(dir);
+    }
+
+    pub fn record_song(&self, song: &Song) {
+        self.songs.write().push(song.clone());
+    }
+
+    pub fn get_all(&self) -> Vec<Song> {
+        self.songs.read().clone()
+    }
+
+    pub fn export_current_session(&self) -> Result<Option<PathBuf>, String> {
+        let songs = self.songs.read();
+        if songs.is_empty() {
+            return Ok(None);
+        }
+        if *self.exported_song_count.read() == songs.len() {
+            return Ok(None);
+        }
+
+        let Some(base_dir) = self.base_dir.read().clone() else {
+            return Ok(None);
+        };
+
+        let exported_at = chrono::Utc::now().timestamp_millis();
+        let file_stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+        let path = base_dir.join(format!("karaoke-session-{}.karaoke.json", file_stamp));
+
+        #[derive(Serialize)]
+        struct ExportedSession<'a> {
+            format: &'a str,
+            version: u32,
+            generator: &'a str,
+            kind: &'a str,
+            session: ExportedSessionMeta<'a>,
+            collection: ExportedCollectionData<'a>,
+        }
+        #[derive(Serialize)]
+        struct ExportedSessionMeta<'a> {
+            id: &'a str,
+            #[serde(rename = "startedAt")]
+            started_at: i64,
+            #[serde(rename = "exportedAt")]
+            exported_at: i64,
+            #[serde(rename = "songCount")]
+            song_count: usize,
+        }
+        #[derive(Serialize)]
+        struct ExportedCollectionData<'a> {
+            name: String,
+            visibility: CollectionVisibility,
+            songs: &'a [Song],
+        }
+
+        let export = ExportedSession {
+            format: "karaoke-playlist",
+            version: 1,
+            generator: "FESTEJAR",
+            kind: "session-history",
+            session: ExportedSessionMeta {
+                id: &self.session_id,
+                started_at: self.started_at,
+                exported_at,
+                song_count: songs.len(),
+            },
+            collection: ExportedCollectionData {
+                name: format!("Session {}", file_stamp),
+                visibility: CollectionVisibility::Personal,
+                songs: &songs,
+            },
+        };
+
+        let json = serde_json::to_string_pretty(&export)
+            .map_err(|e| format!("Failed to serialize session history: {}", e))?;
+        fs::write(&path, json)
+            .map_err(|e| format!("Failed to write session history {:?}: {}", path, e))?;
+        *self.exported_song_count.write() = songs.len();
+
+        Ok(Some(path))
     }
 }
 
@@ -489,12 +812,38 @@ impl RoomState {
         self.touch();
     }
 
+    /// Start a fresh host session while preserving persisted playlists.
+    pub fn reset_for_new_session(&mut self, room_id: String, host_peer_id: String, playlists: Vec<PlaylistCollection>) {
+        self.room_id = room_id;
+        self.host_peer_id = host_peer_id;
+        self.connected_clients.clear();
+        self.player.current_song = None;
+        self.player.status = PlayerStatus::Idle;
+        self.player.current_time = 0.0;
+        self.player.duration = 0.0;
+        self.queue.clear();
+        self.playlists = playlists;
+        self.touch();
+    }
+
+    /// End the current host session without touching persisted playlists.
+    pub fn shutdown_host_session(&mut self) {
+        self.connected_clients.clear();
+        self.player.current_song = None;
+        self.player.status = PlayerStatus::Idle;
+        self.player.current_time = 0.0;
+        self.player.duration = 0.0;
+        self.queue.clear();
+        self.touch();
+    }
+
     /// Add a song to the queue
     pub fn add_song(&mut self, song: Song) {
         if self.player.current_song.is_none() {
             self.player.current_song = Some(song);
             self.player.status = PlayerStatus::Loading;
             self.player.current_time = 0.0;
+            self.player.duration = 0.0;
         } else {
             self.queue.push(song);
         }
@@ -503,6 +852,15 @@ impl RoomState {
 
     /// Remove a song from the queue by ID
     pub fn remove_song(&mut self, song_id: &str) -> bool {
+        if self.player.current_song.as_ref().is_some_and(|song| song.id == song_id) {
+            self.player.current_song = None;
+            self.player.current_time = 0.0;
+            self.player.duration = 0.0;
+            self.player.status = PlayerStatus::Idle;
+            self.touch();
+            return true;
+        }
+
         if let Some(pos) = self.queue.iter().position(|s| s.id == song_id) {
             self.queue.remove(pos);
             self.touch();
@@ -586,6 +944,7 @@ impl RoomState {
         if let Some(d) = duration {
             self.player.duration = d;
         }
+        self.normalize_empty_player();
         self.touch();
     }
 
@@ -611,6 +970,7 @@ impl RoomState {
         } else {
             self.player.current_song = None;
             self.player.current_time = 0.0;
+            self.player.duration = 0.0;
             self.player.status = PlayerStatus::Idle;
         }
         self.touch();
@@ -624,14 +984,35 @@ impl RoomState {
         } else if !self.queue.is_empty() {
             let next_song = self.queue.remove(0);
             self.player.current_song = Some(next_song);
+            self.player.current_time = 0.0;
+            self.player.duration = 0.0;
             self.player.status = PlayerStatus::Loading;
             self.touch();
         }
     }
 
+    pub fn stop_if_current_youtube_id(&mut self, youtube_id: &str) -> bool {
+        if self.player.current_song.as_ref().is_some_and(|song| song.youtube_id == youtube_id) {
+            self.player.current_song = None;
+            self.player.current_time = 0.0;
+            self.player.duration = 0.0;
+            self.player.status = PlayerStatus::Idle;
+            self.touch();
+            true
+        } else {
+            false
+        }
+    }
+
     /// Pause playback
     pub fn pause(&mut self) {
-        self.player.status = PlayerStatus::Paused;
+        if self.player.current_song.is_some() {
+            self.player.status = PlayerStatus::Paused;
+        } else {
+            self.player.status = PlayerStatus::Idle;
+            self.player.current_time = 0.0;
+            self.player.duration = 0.0;
+        }
         self.touch();
     }
 
@@ -665,6 +1046,189 @@ impl RoomState {
     /// Update the timestamp
     fn touch(&mut self) {
         self.updated_at = chrono::Utc::now().timestamp_millis();
+    }
+
+    fn normalize_empty_player(&mut self) {
+        if self.player.current_song.is_none() {
+            self.player.status = PlayerStatus::Idle;
+            self.player.current_time = 0.0;
+            self.player.duration = 0.0;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn song(id: &str) -> Song {
+        Song {
+            id: id.to_string(),
+            youtube_id: "abc123".to_string(),
+            title: "Song".to_string(),
+            artist: "Artist".to_string(),
+            duration: 180,
+            thumbnail_url: "thumb.jpg".to_string(),
+            added_by: "Singer".to_string(),
+            added_at: 0,
+            resolution_status: Some(ResolutionStatus::Resolved),
+            source: Some(SongSource::Youtube {
+                video_id: Some("abc123".to_string()),
+                url: None,
+            }),
+        }
+    }
+
+    fn imported_spotify_collection(id: &str, playlist_id: &str, name: &str) -> PlaylistCollection {
+        PlaylistCollection {
+            id: id.to_string(),
+            name: name.to_string(),
+            visibility: CollectionVisibility::Personal,
+            songs: vec![song("song")],
+            description: None,
+            source: Some(PlaylistSource::Spotify {
+                playlist_id: playlist_id.to_string(),
+                original_url: format!("https://open.spotify.com/playlist/{playlist_id}"),
+                imported_at: 1,
+            }),
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    fn room() -> RoomState {
+        RoomState::new("room".to_string(), "host".to_string(), Vec::new())
+    }
+
+    #[test]
+    fn pause_without_a_current_song_keeps_player_idle() {
+        let mut state = room();
+
+        state.pause();
+
+        assert!(matches!(state.player.status, PlayerStatus::Idle));
+        assert!(state.player.current_song.is_none());
+        assert_eq!(state.player.current_time, 0.0);
+        assert_eq!(state.player.duration, 0.0);
+    }
+
+    #[test]
+    fn playlist_store_detects_and_updates_spotify_reimport_without_duplicate() {
+        let store = PlaylistStore::new();
+        let first_id = store
+            .upsert_imported_collection(imported_spotify_collection("local-1", "spotify123", "Fiesta"), false)
+            .unwrap();
+        assert_eq!(first_id, "local-1");
+        assert_eq!(store.get_all().len(), 1);
+        assert_eq!(
+            store.upsert_imported_collection(imported_spotify_collection("local-2", "spotify123", "Fiesta 2"), false).unwrap_err(),
+            "Esta playlist ya esta importada."
+        );
+        let updated_id = store
+            .upsert_imported_collection(imported_spotify_collection("local-2", "spotify123", "Fiesta Updated"), true)
+            .unwrap();
+        let all = store.get_all();
+        assert_eq!(updated_id, "local-1");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].name, "Fiesta Updated");
+    }
+
+    #[test]
+    fn playlist_store_persists_imported_collection() {
+        let dir = std::env::temp_dir().join(format!("festejar-playlist-store-test-{}", uuid::Uuid::new_v4()));
+        let store = PlaylistStore::new();
+        store.initialize(dir.clone());
+        store
+            .upsert_imported_collection(imported_spotify_collection("local-1", "spotify123", "Fiesta"), false)
+            .unwrap();
+
+        let restored = PlaylistStore::new();
+        let loaded = restored.initialize(dir.clone());
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].name, "Fiesta");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn player_update_cannot_leave_playing_state_without_a_song() {
+        let mut state = room();
+
+        state.update_player(Some(PlayerStatus::Paused), Some(42.0), Some(180.0));
+
+        assert!(matches!(state.player.status, PlayerStatus::Idle));
+        assert_eq!(state.player.current_time, 0.0);
+        assert_eq!(state.player.duration, 0.0);
+    }
+
+    #[test]
+    fn play_from_queue_resets_stale_player_clock() {
+        let mut state = room();
+        state.player.current_time = 99.0;
+        state.player.duration = 240.0;
+        state.queue.push(song("queued"));
+
+        state.play();
+
+        assert!(matches!(state.player.status, PlayerStatus::Loading));
+        assert_eq!(state.player.current_song.as_ref().map(|s| s.id.as_str()), Some("queued"));
+        assert_eq!(state.player.current_time, 0.0);
+        assert_eq!(state.player.duration, 0.0);
+    }
+
+    #[test]
+    fn removing_the_current_song_stops_the_player_without_skipping() {
+        let mut state = room();
+        state.player.current_song = Some(song("current"));
+        state.player.status = PlayerStatus::Playing;
+        state.player.current_time = 77.0;
+        state.player.duration = 180.0;
+        state.queue.push(song("next"));
+
+        assert!(state.remove_song("current"));
+
+        assert!(matches!(state.player.status, PlayerStatus::Idle));
+        assert!(state.player.current_song.is_none());
+        assert_eq!(state.player.current_time, 0.0);
+        assert_eq!(state.player.duration, 0.0);
+        assert_eq!(state.queue.len(), 1);
+        assert_eq!(state.queue[0].id, "next");
+    }
+
+    #[test]
+    fn stop_if_current_youtube_id_stops_matching_loaded_video() {
+        let mut state = room();
+        let mut current = song("current");
+        current.youtube_id = "same-video".to_string();
+        state.player.current_song = Some(current);
+        state.player.status = PlayerStatus::Playing;
+        state.player.current_time = 33.0;
+        state.player.duration = 180.0;
+
+        assert!(state.stop_if_current_youtube_id("same-video"));
+
+        assert!(matches!(state.player.status, PlayerStatus::Idle));
+        assert!(state.player.current_song.is_none());
+        assert_eq!(state.player.current_time, 0.0);
+        assert_eq!(state.player.duration, 0.0);
+    }
+
+    #[test]
+    fn shutting_down_host_session_clears_player_and_queue() {
+        let mut state = room();
+        state.add_song(song("current"));
+        state.add_song(song("queued"));
+        state.player.status = PlayerStatus::Playing;
+        state.player.current_time = 42.0;
+        state.player.duration = 180.0;
+
+        state.shutdown_host_session();
+
+        assert!(state.player.current_song.is_none());
+        assert!(state.queue.is_empty());
+        assert!(state.connected_clients.is_empty());
+        assert!(matches!(state.player.status, PlayerStatus::Idle));
+        assert_eq!(state.player.current_time, 0.0);
+        assert_eq!(state.player.duration, 0.0);
     }
 }
 

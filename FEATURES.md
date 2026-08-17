@@ -1,4 +1,4 @@
-# KaraokeNatin — Feature Inventory (Audit)
+# FESTEJAR — Feature Inventory (Audit)
 
 > **Updated after the implementation pass.** Notable changes since this was
 > written: scoring is no longer fake (it measures mic input coverage); volume,
@@ -216,7 +216,7 @@ Collections are managed by a single Rust `PlaylistStore` (`apps/host/src-tauri/s
 ### 6.1 Persistence & migration
 **What it does:** Collections persist as JSON at `app_local_data_dir/playlists.json`. On first run, if that file is missing, attempts a one-time migration from a legacy path.
 **GUI layer:** N/A (invisible to users).
-**Logic layer:** `apps/host/src-tauri/src/room_state.rs:99-159` (`PlaylistStore::initialize`) — checks `dirs::data_local_dir()/KaraokeNatin/playlists.json` first, then falls back to a legacy flat `playlist.json` (single array of songs, wrapped into a synthesized "Default Playlist" collection), gated `#[cfg(not(target_os = "android"))]` (`:107`); `apps/host/src-tauri/src/lib.rs:56-66` (calls `initialize` with `app.path().app_local_data_dir()` at startup and syncs into `RoomStateManager`).
+**Logic layer:** `apps/host/src-tauri/src/room_state.rs:99-159` (`PlaylistStore::initialize`) — checks `dirs::data_local_dir()/FESTEJAR/playlists.json` first, then falls back to a legacy flat `playlist.json` (single array of songs, wrapped into a synthesized "Default Playlist" collection), gated `#[cfg(not(target_os = "android"))]` (`:107`); `apps/host/src-tauri/src/lib.rs:56-66` (calls `initialize` with `app.path().app_local_data_dir()` at startup and syncs into `RoomStateManager`).
 **Notes:** Migration logic never deletes the old file (commented-out `fs::remove_file` calls at `room_state.rs:123,144`) — intentionally non-destructive, but means old files linger forever.
 
 ### 6.2 Create / rename / delete collection
@@ -244,7 +244,7 @@ Collections are managed by a single Rust `PlaylistStore` (`apps/host/src-tauri/s
 **Notes:** N/A.
 
 ### 6.6 Export collection to file
-**What it does:** Opens a native "Save As" dialog and writes a versioned JSON export (`{"karaokenatin":"1.0","collection":{...}}`).
+**What it does:** Opens a native "Save As" dialog and writes a versioned JSON export (`{"FESTEJAR":"1.0","collection":{...}}`).
 **GUI layer:** Host: `ControlPanel.tsx:344-353,765-769`. Library: `Library.tsx:193-201,479-483`. Guest remote-ui: **not present** — `exportLibrary()` (`index.html:1912-1917`) posts `EXPORT_LOCAL_PLAYLIST` up to the parent (Host GUI bridge), which is only wired when remote-ui is embedded in-app (see 7.3); a standalone browser guest has no export path at all.
 **Logic layer:** `apps/host/src-tauri/src/commands.rs:478-516` (`save_collection_to_file` — `tauri_plugin_dialog` blocking save, sanitizes filename, writes with `.karaoke.json` suggested extension, logs verification of written file size); `room_state.rs:379-407` (`export_collection`).
 **Notes:** N/A.

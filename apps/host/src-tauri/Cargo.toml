@@ -1,8 +1,8 @@
 [package]
 name = "app"
 version = "0.2.0"
-description = "KaraokeNatin - Karaoke party app with remote control"
-authors = ["KaraokeNatin"]
+description = "FESTEJAR - Karaoke party app with remote control"
+authors = ["FESTEJAR"]
 license = "MIT"
 repository = ""
 edition = "2021"

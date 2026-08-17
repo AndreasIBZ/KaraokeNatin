@@ -1,11 +1,21 @@
-use crate::room_state::{RoomStateManager, PlaylistStore, Song, PlaylistCollection, PlayerStatus, CollectionVisibility};
+use crate::playlist_importer::{
+    imported_playlist_to_collection, preview_from_imported, spotify_playlist_id_from_import,
+    ImportPreview, ImportedPlaylist, KaraokeJsonImporter, PlaylistImporter, SpotifyHttpClient,
+    SpotifyPlaylistImporter,
+};
+use crate::room_state::{
+    CollectionVisibility, PlayerStatus, PlaylistCollection, PlaylistStore, ResolutionStatus,
+    RoomStateManager, SessionHistoryStore, Song, SongSource,
+};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
 
 /// Guard so start_host_server is idempotent
 static SERVER_STARTED: AtomicBool = AtomicBool::new(false);
+const PLAYER_DISPLAY_WINDOW_LABEL: &str = "player-display";
 
 /// Client command types (from P2P protocol)
 #[derive(Debug, Clone, Deserialize)]
@@ -112,10 +122,12 @@ pub fn create_room(
     let room_id = generate_room_id();
     let join_token = generate_join_token();
     
-    // Sync latest playlists from store into the new room state
-    // This ensures that if the user created playlists in Guest mode (via bridge),
-    // they are immediately available in the new Host session.
-    state.write().sync_playlists(playlists.get_all());
+    // Start from a clean player/queue state, while keeping current playlists.
+    state.write().reset_for_new_session(
+        room_id.clone(),
+        Uuid::new_v4().to_string(),
+        playlists.get_all(),
+    );
     
     log::info!("Created room: {} with token", room_id);
     
@@ -145,9 +157,56 @@ pub fn get_room_state(state: tauri::State<RoomStateManager>) -> Result<crate::ro
 
 /// Search YouTube for videos
 #[tauri::command]
-pub async fn search_youtube(query: String, limit: Option<u32>) -> Result<Vec<crate::youtube::SearchResult>, String> {
+pub async fn search_youtube(
+    query: String,
+    limit: Option<u32>,
+    karaoke_only: Option<bool>,
+) -> Result<Vec<crate::youtube::SearchResult>, String> {
     let search_limit = limit.unwrap_or(10);
-    crate::youtube::search_youtube(&query, search_limit).await
+    crate::youtube::search_youtube(&query, search_limit, karaoke_only.unwrap_or(true)).await
+}
+
+/// Queue a result that already came from `search_youtube`.
+///
+/// The host UI has fresh title/channel/duration/thumbnail data in hand when the
+/// user clicks "+ Queue". Re-fetching metadata at that point made the button
+/// feel dead whenever YouTube metadata lookup was slow or flaky, even though
+/// search itself had worked. This path still performs the optional embeddable
+/// preflight, then queues immediately from the search payload.
+#[tauri::command]
+pub async fn queue_search_result(
+    result: crate::youtube::SearchResult,
+    added_by: Option<String>,
+    state: tauri::State<'_, RoomStateManager>,
+    history: tauri::State<'_, SessionHistoryStore>,
+    app: AppHandle,
+) -> Result<(), String> {
+    crate::youtube::ensure_video_is_embeddable(&result.id).await?;
+
+    let song = Song {
+        id: Uuid::new_v4().to_string(),
+        youtube_id: result.id.clone(),
+        title: result.title,
+        artist: result.channel,
+        duration: parse_duration_label(&result.duration),
+        thumbnail_url: result.thumbnail,
+        added_by: added_by.unwrap_or_else(|| "Host".to_string()),
+        added_at: chrono::Utc::now().timestamp_millis(),
+        resolution_status: Some(ResolutionStatus::Resolved),
+        source: Some(SongSource::Youtube {
+            video_id: Some(result.id),
+            url: None,
+        }),
+    };
+
+    {
+        let mut room_state = state.write();
+        queue_song_if_embeddable(&mut room_state, song.clone(), true)?;
+    }
+    history.record_song(&song);
+
+    emit_state(&app, &state)?;
+    Ok(())
 }
 
 /// Process a client command
@@ -156,6 +215,7 @@ pub async fn process_command(
     command: ClientCommand,
     state: tauri::State<'_, RoomStateManager>,
     playlists: tauri::State<'_, PlaylistStore>,
+    history: tauri::State<'_, SessionHistoryStore>,
     app: AppHandle,
 ) -> Result<(), String> {
     log::info!("Processing command: {:?}", command);
@@ -195,9 +255,15 @@ pub async fn process_command(
                         thumbnail_url: metadata.thumbnail_url,
                         added_by: added_by.unwrap_or_else(|| "Guest".to_string()),
                         added_at: chrono::Utc::now().timestamp_millis(),
+                        resolution_status: Some(ResolutionStatus::Resolved),
+                        source: Some(SongSource::Youtube {
+                            video_id: Some(youtube_id.clone()),
+                            url: Some(youtube_url),
+                        }),
                     };
                     let mut room_state = state.write();
-                    queue_song_if_embeddable(&mut room_state, song, true)?;
+                    queue_song_if_embeddable(&mut room_state, song.clone(), true)?;
+                    history.record_song(&song);
                 }
                 Err(e) => {
                     log::error!("Failed to fetch metadata: {}", e);
@@ -247,6 +313,11 @@ pub async fn process_command(
                         thumbnail_url: metadata.thumbnail_url,
                         added_by: added_by.unwrap_or_else(|| "Guest".to_string()),
                         added_at: chrono::Utc::now().timestamp_millis(),
+                        resolution_status: Some(ResolutionStatus::Resolved),
+                        source: Some(SongSource::Youtube {
+                            video_id: Some(youtube_id.clone()),
+                            url: Some(youtube_url),
+                        }),
                     };
                     let target_id = if collection_id.is_empty() {
                         playlists.get_or_create_default_collection()
@@ -266,18 +337,24 @@ pub async fn process_command(
             }
         }
         ClientCommand::PLAYLIST_REMOVE { song_id, collection_id } => {
+            let removed_youtube_id = playlists.collection_song_youtube_id(&collection_id, &song_id);
             if !playlists.remove_from_collection(&collection_id, &song_id) {
                 return Err("Song not found in collection".to_string());
             }
-            state.write().sync_playlists(playlists.get_all());
+            let mut room_state = state.write();
+            if let Some(youtube_id) = removed_youtube_id {
+                room_state.stop_if_current_youtube_id(&youtube_id);
+            }
+            room_state.sync_playlists(playlists.get_all());
         }
         ClientCommand::PLAYLIST_TO_QUEUE { song_id, collection_id } => {
             if let Some(song) = playlists.clone_song_for_queue(&collection_id, &song_id) {
                 crate::youtube::ensure_video_is_embeddable(&song.youtube_id).await?;
                 let mut room_state = state.write();
-                queue_song_if_embeddable(&mut room_state, song, true)?;
+                queue_song_if_embeddable(&mut room_state, song.clone(), true)?;
+                history.record_song(&song);
             } else {
-                return Err("Song not found in collection".to_string());
+                return Err("Esta cancion aun no esta resuelta. Usa la busqueda de YouTube primero.".to_string());
             }
         }
         ClientCommand::CREATE_COLLECTION { name, visibility } => {
@@ -285,10 +362,17 @@ pub async fn process_command(
             state.write().sync_playlists(playlists.get_all());
         }
         ClientCommand::DELETE_COLLECTION { collection_id } => {
+            let removed_video_ids = playlists.collection_video_ids(&collection_id);
             if !playlists.delete_collection(&collection_id) {
                 return Err("Collection not found".to_string());
             }
-            state.write().sync_playlists(playlists.get_all());
+            let mut room_state = state.write();
+            for youtube_id in removed_video_ids {
+                if room_state.stop_if_current_youtube_id(&youtube_id) {
+                    break;
+                }
+            }
+            room_state.sync_playlists(playlists.get_all());
         }
         ClientCommand::RENAME_COLLECTION { collection_id, name } => {
             if !playlists.rename_collection(&collection_id, name) {
@@ -324,6 +408,17 @@ fn queue_song_if_embeddable(
     }
     room_state.add_song(song);
     Ok(())
+}
+
+fn parse_duration_label(label: &str) -> u32 {
+    let mut total = 0u32;
+    for part in label.split(':') {
+        let Ok(value) = part.trim().parse::<u32>() else {
+            return 0;
+        };
+        total = total.saturating_mul(60).saturating_add(value);
+    }
+    total
 }
 
 /// Broadcast the room state to the frontend.
@@ -399,6 +494,102 @@ pub fn update_player_state(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn open_player_display(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(PLAYER_DISPLAY_WINDOW_LABEL) {
+        window.show().map_err(|e| e.to_string())?;
+        notify_player_display_opened(&app);
+        if let Some(main_window) = app.get_webview_window("main") {
+            main_window.set_focus().map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
+
+    let mut builder = WebviewWindowBuilder::new(
+        &app,
+        PLAYER_DISPLAY_WINDOW_LABEL,
+        WebviewUrl::App("index.html".into()),
+    )
+    .initialization_script("window.__KARAOKE_PLAYER_DISPLAY__ = true;")
+    .title("FESTEJAR Player Display")
+    .inner_size(1280.0, 720.0)
+    .resizable(true)
+    .decorations(true)
+    .center();
+
+    if let Some(main_window) = app.get_webview_window("main") {
+        builder = builder.owner(&main_window).map_err(|e| e.to_string())?;
+    }
+
+    let window = builder
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    window.show().map_err(|e| e.to_string())?;
+    notify_player_display_opened(&app);
+    if let Some(main_window) = app.get_webview_window("main") {
+        main_window.set_focus().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_session_history(history: tauri::State<SessionHistoryStore>) -> Vec<Song> {
+    history.get_all()
+}
+
+#[tauri::command]
+pub fn export_session_history(history: tauri::State<SessionHistoryStore>) -> Result<Option<String>, String> {
+    history
+        .export_current_session()
+        .map(|path| path.map(|p| p.display().to_string()))
+}
+
+#[tauri::command]
+pub fn close_player_display(app: AppHandle) -> Result<(), String> {
+    notify_player_display_closed(&app);
+    if let Some(window) = app.get_webview_window(PLAYER_DISPLAY_WINDOW_LABEL) {
+        let _ = window.set_fullscreen(false);
+        window.destroy().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn shutdown_host_session(
+    state: tauri::State<RoomStateManager>,
+    app: AppHandle,
+) -> Result<(), String> {
+    state.write().shutdown_host_session();
+    notify_player_display_closed(&app);
+    if let Some(window) = app.get_webview_window(PLAYER_DISPLAY_WINDOW_LABEL) {
+        let _ = window.set_fullscreen(false);
+        window.destroy().map_err(|e| e.to_string())?;
+    }
+    emit_state(&app, &state)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_player_display_fullscreen(app: AppHandle, fullscreen: bool) -> Result<(), String> {
+    let window = app
+        .get_webview_window(PLAYER_DISPLAY_WINDOW_LABEL)
+        .ok_or_else(|| "Player display window is not open".to_string())?;
+    window.set_focus().map_err(|e| e.to_string())?;
+    window.set_fullscreen(fullscreen).map_err(|e| e.to_string())
+}
+
+fn notify_player_display_opened(app: &AppHandle) {
+    let _ = app.emit_to("main", "player-display-opened", ());
+}
+
+fn notify_player_display_closed(app: &AppHandle) {
+    let _ = app.emit_to("main", "player-display-closed", ());
+    if let Some(main_window) = app.get_webview_window("main") {
+        let _ = main_window.set_focus();
+    }
+}
+
 /// Export a collection to JSON string
 #[tauri::command]
 pub fn export_collection(collection_id: String, playlists: tauri::State<PlaylistStore>) -> Result<String, String> {
@@ -434,8 +625,21 @@ pub fn playlist_create_collection(
 pub fn playlist_delete_collection(
     collection_id: String,
     playlists: tauri::State<PlaylistStore>,
+    state: tauri::State<RoomStateManager>,
+    app: AppHandle,
 ) -> Result<(), String> {
+    let removed_video_ids = playlists.collection_video_ids(&collection_id);
     if playlists.delete_collection(&collection_id) {
+        {
+            let mut room_state = state.write();
+            for youtube_id in removed_video_ids {
+                if room_state.stop_if_current_youtube_id(&youtube_id) {
+                    break;
+                }
+            }
+            room_state.sync_playlists(playlists.get_all());
+        }
+        emit_state(&app, &state)?;
         Ok(())
     } else {
         Err("Collection not found".into())
@@ -488,13 +692,18 @@ pub async fn playlist_add_song(
         .map_err(|e| format!("Failed to fetch metadata: {}", e))?;
     let song = Song {
         id: Uuid::new_v4().to_string(),
-        youtube_id,
+        youtube_id: youtube_id.clone(),
         title: metadata.title,
         artist: metadata.artist,
         duration: metadata.duration,
         thumbnail_url: metadata.thumbnail_url,
         added_by: added_by.unwrap_or_else(|| "Host".to_string()),
         added_at: chrono::Utc::now().timestamp_millis(),
+        resolution_status: Some(ResolutionStatus::Resolved),
+        source: Some(SongSource::Youtube {
+            video_id: Some(youtube_id),
+            url: Some(youtube_url),
+        }),
     };
     let target_id = if collection_id.is_empty() {
         playlists.get_or_create_default_collection()
@@ -514,8 +723,19 @@ pub fn playlist_remove_song(
     collection_id: String,
     song_id: String,
     playlists: tauri::State<PlaylistStore>,
+    state: tauri::State<RoomStateManager>,
+    app: AppHandle,
 ) -> Result<(), String> {
+    let removed_youtube_id = playlists.collection_song_youtube_id(&collection_id, &song_id);
     if playlists.remove_from_collection(&collection_id, &song_id) {
+        {
+            let mut room_state = state.write();
+            if let Some(youtube_id) = removed_youtube_id {
+                room_state.stop_if_current_youtube_id(&youtube_id);
+            }
+            room_state.sync_playlists(playlists.get_all());
+        }
+        emit_state(&app, &state)?;
         Ok(())
     } else {
         Err("Song not found in collection".into())
@@ -529,6 +749,40 @@ pub fn playlist_import_collection(
     playlists: tauri::State<PlaylistStore>,
 ) -> Result<String, String> {
     playlists.import_collection(&data)
+}
+
+#[tauri::command]
+pub async fn preview_spotify_playlist_import(
+    url: String,
+    playlists: tauri::State<'_, PlaylistStore>,
+) -> Result<ImportPreview, String> {
+    let client = SpotifyHttpClient::new()?;
+    let (playlist_id, embed_url, html) = client.fetch_embed_html(&url).await?;
+    let importer = SpotifyPlaylistImporter::new(html, playlist_id.clone(), embed_url);
+    let playlist = importer.import(&url)?;
+    let existing_collection_id = playlists.find_collection_by_spotify_playlist_id(&playlist_id);
+    Ok(preview_from_imported(playlist, existing_collection_id))
+}
+
+#[tauri::command]
+pub fn preview_karaoke_json_playlist_import(data: String) -> Result<ImportPreview, String> {
+    let playlist = KaraokeJsonImporter.import(&data)?;
+    Ok(preview_from_imported(playlist, None))
+}
+
+#[tauri::command]
+pub fn confirm_playlist_import(
+    playlist: ImportedPlaylist,
+    update_existing: bool,
+    playlists: tauri::State<PlaylistStore>,
+    state: tauri::State<RoomStateManager>,
+) -> Result<String, String> {
+    let existing_id = spotify_playlist_id_from_import(&playlist)
+        .and_then(|playlist_id| playlists.find_collection_by_spotify_playlist_id(playlist_id));
+    let collection = imported_playlist_to_collection(playlist, existing_id);
+    let id = playlists.upsert_imported_collection(collection, update_existing)?;
+    state.write().sync_playlists(playlists.get_all());
+    Ok(id)
 }
 
 /// Human-readable description of a dialog-returned `FilePath`, for logs and
@@ -582,7 +836,7 @@ pub async fn save_collection_to_file(
     let path = app.dialog()
         .file()
         .set_file_name(&format!("{}.karaoke.json", safe_name))
-        .add_filter("KaraokeNatin Playlist", &["karaoke.json", "json"])
+        .add_filter("FESTEJAR Playlist", &["karaoke.json", "json"])
         .blocking_save_file();
 
     let Some(file_path) = path else {
@@ -622,7 +876,7 @@ pub async fn load_collection_from_file(
 
     let path = app.dialog()
         .file()
-        .add_filter("KaraokeNatin Playlist", &["karaoke.json", "json"])
+        .add_filter("FESTEJAR Playlist", &["karaoke.json", "json"])
         .blocking_pick_file();
 
     let Some(file_path) = path else {
@@ -690,7 +944,97 @@ pub fn start_host_server() -> Result<u16, String> {
 // ============================================================
 
 /// URL used by `report_issue`.
-const ISSUE_TRACKER_URL: &str = "https://github.com/nojukuramu/KaraokeNatin/issues/new";
+const GITHUB_REPOSITORY_URL: &str = "https://github.com/AndreasIBZ/FESTEJAR";
+const ISSUE_TRACKER_URL: &str = "https://github.com/AndreasIBZ/FESTEJAR/issues/new";
+const APP_STORAGE_DIR_NAME: &str = "FESTEJAR";
+
+pub fn festejar_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    #[cfg(target_os = "android")]
+    {
+        app.path()
+            .app_local_data_dir()
+            .map_err(|e| format!("Could not resolve the data directory: {}", e))
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        dirs::data_local_dir()
+            .or_else(dirs::data_dir)
+            .map(|base| base.join(APP_STORAGE_DIR_NAME).join("data"))
+            .ok_or_else(|| "Could not resolve the local data directory".to_string())
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct AppSettingsInfo {
+    #[serde(rename = "productName")]
+    pub product_name: String,
+    pub version: String,
+    #[serde(rename = "dataDir")]
+    pub data_dir: Option<String>,
+    #[serde(rename = "logDir")]
+    pub log_dir: Option<String>,
+    #[serde(rename = "playlistsPath")]
+    pub playlists_path: Option<String>,
+    #[serde(rename = "sessionHistoryDir")]
+    pub session_history_dir: Option<String>,
+}
+
+/// Return the user-facing app metadata and storage locations shown in Settings.
+#[tauri::command]
+pub fn get_app_settings_info(app: AppHandle) -> AppSettingsInfo {
+    let data_dir = festejar_data_dir(&app).ok();
+    let log_dir = app.path().app_log_dir().ok();
+    let playlists_path = data_dir.as_ref().map(|dir| dir.join("playlists.json"));
+    let session_history_dir = data_dir.as_ref().map(|dir| dir.join("session-history"));
+
+    AppSettingsInfo {
+        product_name: "FESTEJAR".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        data_dir: data_dir.map(|path| path.display().to_string()),
+        log_dir: log_dir.map(|path| path.display().to_string()),
+        playlists_path: playlists_path.map(|path| path.display().to_string()),
+        session_history_dir: session_history_dir.map(|path| path.display().to_string()),
+    }
+}
+
+/// Reveal the app data directory. This contains `playlists.json` and
+/// `session-history/`.
+#[tauri::command]
+pub fn open_data_folder(app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = app;
+        Err("Opening the data folder is not supported on Android.".to_string())
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let dir = festejar_data_dir(&app)?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("Could not create the data directory: {}", e))?;
+        open_path(&dir)
+    }
+}
+
+/// Reveal the automatically exported session-history directory.
+#[tauri::command]
+pub fn open_session_history_folder(app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = app;
+        Err("Opening the session history folder is not supported on Android.".to_string())
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let dir = festejar_data_dir(&app)?.join("session-history");
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("Could not create the session history directory: {}", e))?;
+        open_path(&dir)
+    }
+}
 
 /// Reveal the directory containing the app's log files in the OS file manager.
 ///
@@ -731,10 +1075,17 @@ pub fn report_issue(app: AppHandle) -> Result<(), String> {
     open_url(ISSUE_TRACKER_URL)
 }
 
+/// Open the public GitHub repository in the user's default browser.
+#[tauri::command]
+pub fn open_github_repository(app: AppHandle) -> Result<(), String> {
+    let _ = &app;
+    open_url(GITHUB_REPOSITORY_URL)
+}
+
 /// Open a filesystem path with the platform's file manager.
 #[cfg(not(target_os = "android"))]
 fn open_path(path: &std::path::Path) -> Result<(), String> {
-    let path_str = path.to_str().ok_or("Log directory path is not valid UTF-8")?;
+    let path_str = path.to_str().ok_or("Path is not valid UTF-8")?;
     spawn_opener(path_str)
 }
 
@@ -842,6 +1193,11 @@ mod tests {
             thumbnail_url: "thumb.jpg".to_string(),
             added_by: "Guest".to_string(),
             added_at: 1,
+            resolution_status: Some(ResolutionStatus::Resolved),
+            source: Some(SongSource::Youtube {
+                video_id: Some(youtube_id.to_string()),
+                url: None,
+            }),
         }
     }
 
@@ -893,6 +1249,13 @@ mod tests {
             extract_youtube_id("dQw4w9WgXcQ"),
             Some("dQw4w9WgXcQ".to_string())
         );
+    }
+
+    #[test]
+    fn test_parse_duration_label() {
+        assert_eq!(parse_duration_label("3:45"), 225);
+        assert_eq!(parse_duration_label("1:02:03"), 3723);
+        assert_eq!(parse_duration_label("Live"), 0);
     }
 
     /// T13 regression coverage: `describe_file_path` must handle both

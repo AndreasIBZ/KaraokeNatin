@@ -73,7 +73,7 @@ This is a structural optimization, not a runtime one, but it has the highest lon
 
 Given `remote-ui` is the only client guests actually reach, the pragmatic move is to make it the sole client and delete `web-client`, rather than the reverse. But `remote-ui` being a single 2378-line HTML file with inlined everything is itself the reason it drifted — it cannot import the shared types.
 
-**Suggested direction:** build `remote-ui` as a real (tiny) Vite bundle that imports `@karaokenatin/shared`, emitted to a single self-contained HTML file, still embedded via `include_str!`. That keeps the "one file, no server" deployment property while restoring type checking across the protocol boundary. It also fixes #3 as a side effect, since bundling vendors the deps.
+**Suggested direction:** build `remote-ui` as a real (tiny) Vite bundle that imports `@FESTEJAR/shared`, emitted to a single self-contained HTML file, still embedded via `include_str!`. That keeps the "one file, no server" deployment property while restoring type checking across the protocol boundary. It also fixes #3 as a side effect, since bundling vendors the deps.
 
 **Why Tier 2:** high value, but it is a real refactor and it should come after the protocol itself stabilizes (#1).
 
@@ -117,7 +117,7 @@ There are no tests anywhere. That is a general problem, but the targeted version
 This is Tier 3 by ordering only — if #1 is attempted, this becomes a prerequisite, not a follow-up.
 
 ### 10. Stop committing build artifacts
-`gen/android/**` (44 files including `gradle-wrapper.jar` and a stale Vite bundle), `KaraokeNatin-arm64-release.apk.idsig` (262 KB), two `error_log*.txt`, `tsconfig.tsbuildinfo`. Repo size is not the real cost — the stale committed bundle at `gen/android/app/src/main/assets/assets/index-DXbmAp6d.js` is, because an Android build can pick it up instead of a fresh one and silently ship a frontend that does not match `src/`.
+`gen/android/**` (44 files including `gradle-wrapper.jar` and a stale Vite bundle), `FESTEJAR-arm64-release.apk.idsig` (262 KB), two `error_log*.txt`, `tsconfig.tsbuildinfo`. Repo size is not the real cost — the stale committed bundle at `gen/android/app/src/main/assets/assets/index-DXbmAp6d.js` is, because an Android build can pick it up instead of a fresh one and silently ship a frontend that does not match `src/`.
 
 ### 11. Make the build reproducible cross-platform
 Covered as a defect in ISSUES 2.3. As an optimization: adding `deb`/`appimage` to `tauri.conf.json` bundle targets and providing `.sh` equivalents of the three `.bat` scripts is the difference between "one developer's Windows machine can cut a release" and "CI can". Restoring the deleted `.github/workflows/build-release.yml` is the natural companion.

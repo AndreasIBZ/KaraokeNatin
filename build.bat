@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 REM ============================================================
-REM KaraokeNatin Build Script - Android & Windows
+REM FESTEJAR Build Script - Android & Windows
 REM ============================================================
 REM Usage:
 REM   build.bat              - Build both Android + Windows
@@ -58,10 +58,10 @@ set BUILD_TOOLS=%ANDROID_HOME%\build-tools\%BUILD_TOOLS_VERSION%
 echo Using Android build-tools %BUILD_TOOLS_VERSION% ^(%BUILD_TOOLS%^)
 
 REM --- Keystore Configuration ---
-if "%KEYSTORE_PATH%"=="" set KEYSTORE_PATH=karaokenatin.keystore
+if "%KEYSTORE_PATH%"=="" set KEYSTORE_PATH=FESTEJAR.keystore
 set KEYSTORE=%PROJECT_ROOT%%KEYSTORE_PATH%
 
-if "%KEYSTORE_ALIAS%"=="" set KEYSTORE_ALIAS=karaokenatin
+if "%KEYSTORE_ALIAS%"=="" set KEYSTORE_ALIAS=FESTEJAR
 
 REM --- Parse argument ---
 set TARGET=%1
@@ -80,14 +80,14 @@ exit /b 1
 :preflight
 echo.
 echo ============================================================
-echo  KaraokeNatin Build - %TARGET%
+echo  FESTEJAR Build - %TARGET%
 echo ============================================================
 echo.
 
 REM --- Step 1: Build shared package ---
 echo [1/4] Building shared package...
 cd /d "%PROJECT_ROOT%"
-call pnpm --filter @karaokenatin/shared build
+call pnpm --filter @FESTEJAR/shared build
 if errorlevel 1 (
     echo ERROR: Failed to build shared package.
     exit /b 1
@@ -98,7 +98,7 @@ echo.
 REM --- Step 2: Build host frontend ---
 echo [2/4] Building host frontend...
 cd /d "%PROJECT_ROOT%"
-call pnpm --filter @karaokenatin/host build
+call pnpm --filter @FESTEJAR/host build
 if errorlevel 1 (
     echo ERROR: Failed to build host frontend.
     exit /b 1
@@ -152,7 +152,7 @@ if errorlevel 1 (
 REM --- Sign the APK if keystore exists ---
 if "%TARGET%"=="android_signed" goto :sign_apk
 set APK_UNSIGNED=%ANDROID_GEN%\app\build\outputs\apk\arm64\release\app-arm64-release-unsigned.apk
-set APK_SIGNED=%PROJECT_ROOT%KaraokeNatin-arm64-release.apk
+set APK_SIGNED=%PROJECT_ROOT%FESTEJAR-arm64-release.apk
 
 if exist "%KEYSTORE%" (
     echo       Signing APK...
@@ -197,12 +197,12 @@ goto :done
 :sign_apk
 echo.
 echo ============================================================
-echo  KaraokeNatin - Sign Android APK
+echo  FESTEJAR - Sign Android APK
 echo ============================================================
 echo.
 
 set APK_UNSIGNED=%ANDROID_GEN%\app\build\outputs\apk\arm64\release\app-arm64-release-unsigned.apk
-set APK_SIGNED=%PROJECT_ROOT%KaraokeNatin-arm64-release.apk
+set APK_SIGNED=%PROJECT_ROOT%FESTEJAR-arm64-release.apk
 
 if not exist "%APK_UNSIGNED%" (
     echo ERROR: No unsigned APK found. Run "build.bat android" first.

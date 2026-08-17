@@ -1,16 +1,17 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "KaraokeNatin",
+  "productName": "FESTEJAR",
   "version": "0.2.0",
-  "identifier": "com.karaokenatin.app",
+  "identifier": "com.festejar.host",
   "build": {
+    "beforeDevCommand": "pnpm dev",
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173"
   },
   "app": {
     "windows": [
       {
-        "title": "KaraokeNatin",
+        "title": "FESTEJAR",
         "width": 1280,
         "height": 720,
         "minWidth": 400,
@@ -40,6 +41,10 @@
       "icons/icon.ico"
     ],
     "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "startMenuFolder": "FESTEJAR"
+      },
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
       }
@@ -56,9 +61,9 @@
       "minSdkVersion": 24
     },
     "shortDescription": "Karaoke party app with remote control",
-    "longDescription": "KaraokeNatin is a karaoke party app that lets guests add songs from their phones. Features include YouTube integration, real-time queue management, and a mobile-friendly remote control interface. Works on Windows, Android phones, and Android TV.",
-    "copyright": "Copyright © 2026 KaraokeNatin. MIT License.",
+    "longDescription": "FESTEJAR is a karaoke party app that lets guests add songs from their phones. Features include YouTube integration, real-time queue management, and a mobile-friendly remote control interface. Works on Windows, Android phones, and Android TV.",
+    "copyright": "Copyright © 2026 FESTEJAR. MIT License.",
     "category": "Entertainment",
-    "publisher": "KaraokeNatin"
+    "publisher": "FESTEJAR"
   }
 }

@@ -12,7 +12,7 @@ interface ModeSelectProps {
 export default function ModeSelect({ onSelectHost, onSelectGuest, onSelectLibrary }: ModeSelectProps) {
     return (
         <div className="mode-select-screen">
-            <h1 className="mode-select-logo"><MicVocal size={40} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '0.3em' }} /> KaraokeNatin</h1>
+            <h1 className="mode-select-logo"><MicVocal size={40} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '0.3em' }} /> FESTEJAR</h1>
             <p className="mode-select-tagline">Choose how you want to use the app</p>
 
             <div className="mode-select-cards">

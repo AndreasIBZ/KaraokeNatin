@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ============================================================
-# KaraokeNatin - Start Development Environment (Linux/macOS)
+# FESTEJAR - Start Development Environment (Linux/macOS)
 # POSIX counterpart to start-dev.bat.
 # ============================================================
 # start-dev.bat opens three terminal windows: a web-client dev server,
@@ -23,7 +23,7 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOST_DIR="${PROJECT_ROOT}/apps/host"
 
-echo "Starting KaraokeNatin Development Environment..."
+echo "Starting FESTEJAR Development Environment..."
 echo
 
 # --- Configuration Loading ---
@@ -71,19 +71,19 @@ launch_in_terminal() {
 
 if [ -n "$TERMINAL" ]; then
     echo "[1/2] Launching Host Vite Dev Server in a new terminal (${TERMINAL})..."
-    launch_in_terminal "KaraokeNatin - Host (Vite)" "$HOST_DIR" "pnpm dev"
+    launch_in_terminal "FESTEJAR - Host (Vite)" "$HOST_DIR" "pnpm dev"
 
     sleep 3
 
     echo "[2/2] Launching Host Tauri Application in a new terminal (${TERMINAL})..."
-    launch_in_terminal "KaraokeNatin - Host (Tauri)" "$HOST_DIR" "pnpm tauri dev"
+    launch_in_terminal "FESTEJAR - Host (Tauri)" "$HOST_DIR" "pnpm tauri dev"
 
     echo
     echo "==============================================================="
     echo "Terminals launched!"
     echo "==============================================================="
 else
-    LOG_FILE="/tmp/karaokenatin-vite-dev.log"
+    LOG_FILE="/tmp/FESTEJAR-vite-dev.log"
     echo "No terminal emulator found (tried gnome-terminal, konsole, xterm)."
     echo "Falling back to a background process for Vite; its output goes to ${LOG_FILE}"
     echo

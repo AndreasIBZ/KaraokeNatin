@@ -22,12 +22,12 @@ Or, from `apps/host`: `pnpm tauri build`.
 Output lands in `apps/host/src-tauri/target/release/bundle/`.
 
 **Windows**
-- `nsis/KaraokeNatin_<version>_x64-setup.exe`
-- `msi/KaraokeNatin_<version>_x64_en-US.msi`
+- `nsis/FESTEJAR_<version>_x64-setup.exe`
+- `msi/FESTEJAR_<version>_x64_en-US.msi`
 
 **Linux**
-- `deb/karaokenatin_<version>_amd64.deb`
-- `appimage/karaokenatin_<version>_amd64.AppImage`
+- `deb/FESTEJAR_<version>_amd64.deb`
+- `appimage/FESTEJAR_<version>_amd64.AppImage`
 
 Linux builds need the GTK/WebKit development headers listed in `QUICK_START.md`. AppImage builds bundle the media framework, because WebKit relies on GStreamer for playback and a stock system may lack the codecs.
 
