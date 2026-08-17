@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { List, type RowComponentProps } from 'react-window';
 import { ArrowLeft, Sun, Moon, Search, Plus, Music, Trash2, Pencil, Globe, Lock, Upload, ChevronDown, X, FileJson } from 'lucide-react';
 import { PlaylistCollection, Song } from '../hooks/useRoomState';
 import {
@@ -11,11 +10,14 @@ import {
     playlistSetVisibility,
     playlistAddSong,
     playlistRemoveSong,
+    playlistResolveSong,
+    playlistMoveSongs,
     saveCollectionToFile,
     previewSpotifyPlaylistImport,
     previewKaraokeJsonPlaylistImport,
     confirmPlaylistImport,
     type ImportPreview,
+    type YouTubeSearchResult,
 } from '../lib/commands';
 import { setHostInputFocused } from '../hooks/useRoomState';
 
@@ -31,27 +33,46 @@ interface LibraryProps {
     onBack: () => void;
 }
 
-// Library collections are unbounded (a user can accumulate hundreds of
-// songs), so the song list is virtualized with react-window: only rows
-// scrolled into view exist in the DOM. This page has no D-pad wiring
-// (no useFocusable calls anywhere in this file) — it's the mouse/touch
-// management screen, not a TV surface — so windowing carries none of the
-// spatial-navigation focus risk that keeps ControlPanel.tsx and Queue.tsx
-// unvirtualized. See REPOMAPPING.md / task.md T28 for that distinction.
-const PLAYLIST_ROW_HEIGHT = 54; // matches .playlist-item (padding + 30px thumb/meta) + margin-bottom
-const PLAYLIST_LIST_HEIGHT = 280; // matches the old .playlist-list max-height
+const PLAYLIST_PAGE_SIZE = 20;
 
-interface PlaylistRowData {
-    songs: Song[];
+interface PlaylistSongRowProps {
+    song: Song;
+    index: number;
+    selected: boolean;
+    suggestions: YouTubeSearchResult[];
+    resolving: boolean;
+    selectedSuggestionId?: string;
+    onSelect: (songId: string, value: boolean) => void;
     onRemove: (songId: string) => void;
     onResolve: (song: Song) => void;
+    onSuggestionChange: (songId: string, videoId: string) => void;
+    onApplySuggestion: (song: Song) => void;
 }
 
-function PlaylistSongRow({ index, style, songs, onRemove, onResolve }: RowComponentProps<PlaylistRowData>) {
-    const song = songs[index];
+function PlaylistSongRow({
+    song,
+    index,
+    selected,
+    suggestions,
+    resolving,
+    selectedSuggestionId,
+    onSelect,
+    onRemove,
+    onResolve,
+    onSuggestionChange,
+    onApplySuggestion,
+}: PlaylistSongRowProps) {
     const isUnresolved = !song.youtubeId || song.resolutionStatus === 'UNRESOLVED';
+    const selectedSuggestion = suggestions.find((suggestion) => suggestion.id === selectedSuggestionId) || suggestions[0];
     return (
-        <div style={style} className="playlist-item">
+        <div className="playlist-item">
+            <input
+                type="checkbox"
+                className="playlist-select"
+                checked={selected}
+                onChange={(event) => onSelect(song.id, event.target.checked)}
+                title="Select song"
+            />
             <span className="playlist-number">{index + 1}</span>
             {song.thumbnailUrl ? (
                 <img src={song.thumbnailUrl} alt="" loading="lazy" decoding="async" width={40} height={30} className="playlist-thumb" />
@@ -63,13 +84,38 @@ function PlaylistSongRow({ index, style, songs, onRemove, onResolve }: RowCompon
                 <div className="playlist-meta">{song.artist}{isUnresolved ? ' • unresolved' : ''}</div>
             </div>
             {isUnresolved && (
-                <button
-                    className="playlist-resolve-btn"
-                    onClick={() => onResolve(song)}
-                    title="Resolve via YouTube search"
-                >
-                    Resolve
-                </button>
+                suggestions.length > 0 ? (
+                    <div className="playlist-resolve-picker">
+                        <select
+                            value={selectedSuggestion?.id || ''}
+                            onChange={(event) => onSuggestionChange(song.id, event.target.value)}
+                            title="Choose YouTube match"
+                        >
+                            {suggestions.map((suggestion) => (
+                                <option value={suggestion.id} key={suggestion.id}>
+                                    {suggestion.title} - {suggestion.channel}
+                                </option>
+                            ))}
+                        </select>
+                        <button
+                            className="playlist-resolve-btn"
+                            onClick={() => onApplySuggestion(song)}
+                            disabled={!selectedSuggestion}
+                            title="Replace this playlist entry"
+                        >
+                            Apply
+                        </button>
+                    </div>
+                ) : (
+                    <button
+                        className="playlist-resolve-btn"
+                        onClick={() => onResolve(song)}
+                        disabled={resolving}
+                        title="Find YouTube matches"
+                    >
+                        {resolving ? 'Resolving...' : 'Resolve'}
+                    </button>
+                )
             )}
             <button
                 className="playlist-remove-btn"
@@ -105,6 +151,19 @@ async function readFileAsText(file: File) {
     });
 }
 
+function normalizeMatchText(value: string) {
+    return value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function matchScore(song: Song, result: YouTubeSearchResult) {
+    const wanted = normalizeMatchText(`${song.title} ${song.artist}`);
+    const candidate = normalizeMatchText(`${result.title} ${result.channel}`);
+    if (!wanted || !candidate) return 0;
+    const words = wanted.split(' ').filter((word) => word.length > 2);
+    const hits = words.filter((word) => candidate.includes(word)).length;
+    return hits / Math.max(words.length, 1);
+}
+
 /**
  * Standalone Library Management Page
  * Allows managing personal song collections with full organization features
@@ -122,6 +181,13 @@ export default function Library({ onBack }: LibraryProps) {
     const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
     const [importing, setImporting] = useState(false);
     const [importError, setImportError] = useState<string | null>(null);
+    const [playlistPage, setPlaylistPage] = useState(0);
+    const [selectedSongIds, setSelectedSongIds] = useState<Set<string>>(new Set());
+    const [resolveKaraokeOnly, setResolveKaraokeOnly] = useState(() => localStorage.getItem('library_resolve_karaoke_only') !== 'false');
+    const [resolutionSuggestions, setResolutionSuggestions] = useState<Record<string, YouTubeSearchResult[]>>({});
+    const [selectedSuggestions, setSelectedSuggestions] = useState<Record<string, string>>({});
+    const [resolvingSongIds, setResolvingSongIds] = useState<Set<string>>(new Set());
+    const [bulkMoveTargetId, setBulkMoveTargetId] = useState('');
 
     // Collection management
     const [newCollectionName, setNewCollectionName] = useState('');
@@ -142,6 +208,18 @@ export default function Library({ onBack }: LibraryProps) {
     useEffect(() => {
         loadCollections();
     }, []);
+
+    useEffect(() => {
+        localStorage.setItem('library_resolve_karaoke_only', resolveKaraokeOnly ? 'true' : 'false');
+    }, [resolveKaraokeOnly]);
+
+    useEffect(() => {
+        setPlaylistPage(0);
+        setSelectedSongIds(new Set());
+        setResolutionSuggestions({});
+        setSelectedSuggestions({});
+        setBulkMoveTargetId('');
+    }, [activeCollectionId]);
 
     const loadCollections = async () => {
         try {
@@ -180,12 +258,73 @@ export default function Library({ onBack }: LibraryProps) {
         }
     };
 
-    const handleResolveImportedSong = useCallback((song: Song) => {
+    const searchResolutionCandidates = useCallback(async (song: Song) => {
         const query = [song.title, song.artist].filter(Boolean).join(' ');
-        setSearchQuery(query);
-        void runSearch(query);
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-    }, []);
+        if (!query.trim()) return;
+        setResolvingSongIds((prev) => new Set(prev).add(song.id));
+        try {
+            const results = await invoke<YouTubeSearchResult[]>('search_youtube', {
+                query,
+                limit: 5,
+                karaokeOnly: resolveKaraokeOnly,
+            });
+            const sorted = [...results].sort((a, b) => matchScore(song, b) - matchScore(song, a));
+            setResolutionSuggestions((prev) => ({ ...prev, [song.id]: sorted }));
+            if (sorted[0]) {
+                setSelectedSuggestions((prev) => ({ ...prev, [song.id]: sorted[0].id }));
+            }
+        } catch (error) {
+            console.error('[Library] Resolve search failed:', error);
+        } finally {
+            setResolvingSongIds((prev) => {
+                const next = new Set(prev);
+                next.delete(song.id);
+                return next;
+            });
+        }
+    }, [resolveKaraokeOnly]);
+
+    const handleResolveImportedSong = useCallback((song: Song) => {
+        void searchResolutionCandidates(song);
+    }, [searchResolutionCandidates]);
+
+    const applyResolutionSuggestion = useCallback(async (song: Song) => {
+        if (!activeCollectionId) return;
+        const suggestions = resolutionSuggestions[song.id] || [];
+        const selectedId = selectedSuggestions[song.id] || suggestions[0]?.id;
+        const result = suggestions.find((suggestion) => suggestion.id === selectedId);
+        if (!result) return;
+
+        setResolvingSongIds((prev) => new Set(prev).add(song.id));
+        try {
+            await playlistResolveSong(activeCollectionId, song.id, result);
+            setResolutionSuggestions((prev) => {
+                const next = { ...prev };
+                delete next[song.id];
+                return next;
+            });
+            setSelectedSuggestions((prev) => {
+                const next = { ...prev };
+                delete next[song.id];
+                return next;
+            });
+            setSelectedSongIds((prev) => {
+                const next = new Set(prev);
+                next.delete(song.id);
+                return next;
+            });
+            await loadCollections();
+        } catch (error) {
+            console.error('[Library] Apply resolution failed:', error);
+            alert(typeof error === 'string' ? error : 'Failed to resolve song');
+        } finally {
+            setResolvingSongIds((prev) => {
+                const next = new Set(prev);
+                next.delete(song.id);
+                return next;
+            });
+        }
+    }, [activeCollectionId, resolutionSuggestions, selectedSuggestions]);
 
     const handleCreateCollection = async () => {
         if (!newCollectionName.trim()) return;
@@ -371,6 +510,81 @@ export default function Library({ onBack }: LibraryProps) {
 
     const activeCollection = collections.find(c => c.id === activeCollectionId);
     const totalSongs = collections.reduce((sum, c) => sum + c.songs.length, 0);
+    const pageCount = activeCollection ? Math.max(1, Math.ceil(activeCollection.songs.length / PLAYLIST_PAGE_SIZE)) : 1;
+    const safePage = Math.min(playlistPage, pageCount - 1);
+    const visibleSongs = activeCollection?.songs.slice(
+        safePage * PLAYLIST_PAGE_SIZE,
+        safePage * PLAYLIST_PAGE_SIZE + PLAYLIST_PAGE_SIZE,
+    ) || [];
+    const visibleSongIds = visibleSongs.map((song) => song.id);
+    const selectedVisibleCount = visibleSongIds.filter((id) => selectedSongIds.has(id)).length;
+    const selectedSongs = activeCollection?.songs.filter((song) => selectedSongIds.has(song.id)) || [];
+    const selectedUnresolvedSongs = selectedSongs.filter((song) => !song.youtubeId || song.resolutionStatus === 'UNRESOLVED');
+
+    const handleSelectSong = (songId: string, value: boolean) => {
+        setSelectedSongIds((prev) => {
+            const next = new Set(prev);
+            if (value) {
+                next.add(songId);
+            } else {
+                next.delete(songId);
+            }
+            return next;
+        });
+    };
+
+    const handleSelectVisible = (value: boolean) => {
+        setSelectedSongIds((prev) => {
+            const next = new Set(prev);
+            visibleSongIds.forEach((id) => {
+                if (value) {
+                    next.add(id);
+                } else {
+                    next.delete(id);
+                }
+            });
+            return next;
+        });
+    };
+
+    const handleBulkResolve = async () => {
+        for (const song of selectedUnresolvedSongs) {
+            if (!resolutionSuggestions[song.id]?.length) {
+                await searchResolutionCandidates(song);
+            }
+        }
+    };
+
+    const handleApplySelectedResolutions = async () => {
+        for (const song of selectedUnresolvedSongs) {
+            if (resolutionSuggestions[song.id]?.length) {
+                await applyResolutionSuggestion(song);
+            }
+        }
+    };
+
+    const handleBulkDelete = async () => {
+        if (!activeCollectionId || selectedSongIds.size === 0) return;
+        if (!confirm(`Delete ${selectedSongIds.size} selected songs?`)) return;
+        for (const songId of Array.from(selectedSongIds)) {
+            await playlistRemoveSong(activeCollectionId, songId);
+        }
+        setSelectedSongIds(new Set());
+        await loadCollections();
+    };
+
+    const handleBulkMove = async () => {
+        if (!activeCollectionId || !bulkMoveTargetId || selectedSongIds.size === 0) return;
+        try {
+            await playlistMoveSongs(activeCollectionId, bulkMoveTargetId, Array.from(selectedSongIds));
+            setSelectedSongIds(new Set());
+            setBulkMoveTargetId('');
+            await loadCollections();
+        } catch (error) {
+            console.error('[Library] Move songs failed:', error);
+            alert(typeof error === 'string' ? error : 'Failed to move songs');
+        }
+    };
 
     return (
         <div className="library-page">
@@ -731,6 +945,14 @@ export default function Library({ onBack }: LibraryProps) {
                     {/* Collection Actions */}
                     {activeCollection && (
                         <div className="collection-actions-bar">
+                            <label className="playlist-resolve-mode">
+                                <input
+                                    type="checkbox"
+                                    checked={resolveKaraokeOnly}
+                                    onChange={(event) => setResolveKaraokeOnly(event.target.checked)}
+                                />
+                                <span>Karaoke</span>
+                            </label>
                             <button
                                 className="btn-sm btn-secondary"
                                 onClick={() => handleToggleVisibility(activeCollection)}
@@ -778,15 +1000,79 @@ export default function Library({ onBack }: LibraryProps) {
                             <p className="playlist-empty-hint">{collections.length === 0 ? 'Create your first collection above' : 'Add songs from search results'}</p>
                         </div>
                     ) : (
-                        <List
-                            className="playlist-list"
-                            style={{ height: PLAYLIST_LIST_HEIGHT }}
-                            rowComponent={PlaylistSongRow}
-                            rowCount={activeCollection.songs.length}
-                            rowHeight={PLAYLIST_ROW_HEIGHT}
-                            rowProps={{ songs: activeCollection.songs, onRemove: handleRemoveFromActiveCollection, onResolve: handleResolveImportedSong }}
-                            rowKey={(index, data) => data.songs[index].id}
-                        />
+                        <>
+                            <div className="playlist-bulk-toolbar">
+                                <label className="playlist-select-visible">
+                                    <input
+                                        type="checkbox"
+                                        checked={visibleSongs.length > 0 && selectedVisibleCount === visibleSongs.length}
+                                        ref={(input) => {
+                                            if (input) input.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleSongs.length;
+                                        }}
+                                        onChange={(event) => handleSelectVisible(event.target.checked)}
+                                    />
+                                    <span>Select visible ({selectedVisibleCount}/{visibleSongs.length})</span>
+                                </label>
+                                <button className="btn-sm btn-secondary" onClick={handleBulkResolve} disabled={selectedUnresolvedSongs.length === 0}>
+                                    Resolver seleccionadas
+                                </button>
+                                <button className="btn-sm btn-primary" onClick={handleApplySelectedResolutions} disabled={selectedUnresolvedSongs.every((song) => !resolutionSuggestions[song.id]?.length)}>
+                                    Aplicar propuestas
+                                </button>
+                                <select
+                                    className="playlist-move-select"
+                                    value={bulkMoveTargetId}
+                                    onChange={(event) => setBulkMoveTargetId(event.target.value)}
+                                    disabled={selectedSongIds.size === 0}
+                                >
+                                    <option value="">Mover a...</option>
+                                    {collections.filter((collection) => collection.id !== activeCollection.id).map((collection) => (
+                                        <option key={collection.id} value={collection.id}>{collection.name}</option>
+                                    ))}
+                                </select>
+                                <button className="btn-sm btn-secondary" onClick={handleBulkMove} disabled={!bulkMoveTargetId || selectedSongIds.size === 0}>
+                                    Mover
+                                </button>
+                                <button className="btn-sm btn-danger-text" onClick={handleBulkDelete} disabled={selectedSongIds.size === 0}>
+                                    Borrar
+                                </button>
+                            </div>
+
+                            <div className="playlist-page-info">
+                                <span>
+                                    {safePage * PLAYLIST_PAGE_SIZE + 1}-{Math.min((safePage + 1) * PLAYLIST_PAGE_SIZE, activeCollection.songs.length)}
+                                    {' '}of {activeCollection.songs.length}
+                                </span>
+                                <div className="playlist-page-buttons">
+                                    <button className="btn-sm btn-secondary" onClick={() => setPlaylistPage((page) => Math.max(0, page - 1))} disabled={safePage === 0}>
+                                        Prev
+                                    </button>
+                                    <span>Page {safePage + 1} / {pageCount}</span>
+                                    <button className="btn-sm btn-secondary" onClick={() => setPlaylistPage((page) => Math.min(pageCount - 1, page + 1))} disabled={safePage >= pageCount - 1}>
+                                        Next
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="playlist-list paged">
+                                {visibleSongs.map((song, index) => (
+                                    <PlaylistSongRow
+                                        key={song.id}
+                                        song={song}
+                                        index={safePage * PLAYLIST_PAGE_SIZE + index}
+                                        selected={selectedSongIds.has(song.id)}
+                                        suggestions={resolutionSuggestions[song.id] || []}
+                                        selectedSuggestionId={selectedSuggestions[song.id]}
+                                        resolving={resolvingSongIds.has(song.id)}
+                                        onSelect={handleSelectSong}
+                                        onRemove={handleRemoveFromActiveCollection}
+                                        onResolve={handleResolveImportedSong}
+                                        onSuggestionChange={(songId, videoId) => setSelectedSuggestions((prev) => ({ ...prev, [songId]: videoId }))}
+                                        onApplySuggestion={applyResolutionSuggestion}
+                                    />
+                                ))}
+                            </div>
+                        </>
                     )}
                 </div>
             </div>

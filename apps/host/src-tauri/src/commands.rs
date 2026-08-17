@@ -742,6 +742,56 @@ pub fn playlist_remove_song(
     }
 }
 
+#[tauri::command]
+pub async fn playlist_resolve_song(
+    collection_id: String,
+    song_id: String,
+    result: crate::youtube::SearchResult,
+    playlists: tauri::State<'_, PlaylistStore>,
+    state: tauri::State<'_, RoomStateManager>,
+    app: AppHandle,
+) -> Result<(), String> {
+    crate::youtube::ensure_video_is_embeddable(&result.id).await?;
+    let song = Song {
+        id: song_id.clone(),
+        youtube_id: result.id.clone(),
+        title: result.title,
+        artist: result.channel,
+        duration: parse_duration_label(&result.duration),
+        thumbnail_url: result.thumbnail,
+        added_by: "Resolve".to_string(),
+        added_at: chrono::Utc::now().timestamp_millis(),
+        resolution_status: Some(ResolutionStatus::Resolved),
+        source: Some(SongSource::Youtube {
+            video_id: Some(result.id),
+            url: Some(result.url),
+        }),
+    };
+    if !playlists.replace_song_in_collection(&collection_id, &song_id, song) {
+        return Err("Song not found in collection".into());
+    }
+    state.write().sync_playlists(playlists.get_all());
+    emit_state(&app, &state)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn playlist_move_songs(
+    source_collection_id: String,
+    target_collection_id: String,
+    song_ids: Vec<String>,
+    playlists: tauri::State<PlaylistStore>,
+    state: tauri::State<RoomStateManager>,
+    app: AppHandle,
+) -> Result<(), String> {
+    if !playlists.move_songs_to_collection(&source_collection_id, &target_collection_id, &song_ids) {
+        return Err("No songs were moved".into());
+    }
+    state.write().sync_playlists(playlists.get_all());
+    emit_state(&app, &state)?;
+    Ok(())
+}
+
 /// Import a collection from JSON string (standalone)
 #[tauri::command]
 pub fn playlist_import_collection(

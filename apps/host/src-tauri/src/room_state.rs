@@ -399,6 +399,68 @@ impl PlaylistStore {
         success
     }
 
+    pub fn replace_song_in_collection(&self, collection_id: &str, song_id: &str, mut song: Song) -> bool {
+        let success = {
+            let mut playlists = self.playlists.write();
+            if let Some(collection) = playlists.iter_mut().find(|c| c.id == collection_id) {
+                if let Some(existing) = collection.songs.iter_mut().find(|s| s.id == song_id) {
+                    song.id = existing.id.clone();
+                    song.added_at = existing.added_at;
+                    *existing = song;
+                    collection.updated_at = chrono::Utc::now().timestamp_millis();
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+        if success {
+            self.save();
+        }
+        success
+    }
+
+    pub fn move_songs_to_collection(&self, source_collection_id: &str, target_collection_id: &str, song_ids: &[String]) -> bool {
+        if source_collection_id == target_collection_id || song_ids.is_empty() {
+            return true;
+        }
+
+        let success = {
+            let mut playlists = self.playlists.write();
+            let Some(source_index) = playlists.iter().position(|c| c.id == source_collection_id) else {
+                return false;
+            };
+            let Some(target_index) = playlists.iter().position(|c| c.id == target_collection_id) else {
+                return false;
+            };
+            let ids: std::collections::HashSet<&str> = song_ids.iter().map(String::as_str).collect();
+            let mut moved = Vec::new();
+            playlists[source_index].songs.retain(|song| {
+                if ids.contains(song.id.as_str()) {
+                    moved.push(song.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            if moved.is_empty() {
+                return false;
+            }
+            let now = chrono::Utc::now().timestamp_millis();
+            playlists[source_index].updated_at = now;
+            playlists[target_index].songs.extend(moved);
+            playlists[target_index].updated_at = now;
+            true
+        };
+
+        if success {
+            self.save();
+        }
+        success
+    }
+
     pub fn collection_song_youtube_id(&self, collection_id: &str, song_id: &str) -> Option<String> {
         self.playlists
             .read()
@@ -1147,6 +1209,49 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].name, "Fiesta");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn playlist_store_replaces_song_in_place() {
+        let store = PlaylistStore::new();
+        let collection_id = store.create_collection("Songs".to_string(), CollectionVisibility::Personal);
+        let original = Song {
+            id: "song-1".to_string(),
+            youtube_id: String::new(),
+            title: "Unresolved".to_string(),
+            artist: "Artist".to_string(),
+            duration: 0,
+            thumbnail_url: String::new(),
+            added_by: "Import".to_string(),
+            added_at: 10,
+            resolution_status: Some(ResolutionStatus::Unresolved),
+            source: Some(SongSource::Local),
+        };
+        store.add_to_collection(&collection_id, original);
+
+        let mut resolved = song("replacement");
+        resolved.youtube_id = "resolvedid".to_string();
+        assert!(store.replace_song_in_collection(&collection_id, "song-1", resolved));
+        let all = store.get_all();
+        assert_eq!(all[0].songs[0].id, "song-1");
+        assert_eq!(all[0].songs[0].youtube_id, "resolvedid");
+        assert_eq!(all[0].songs[0].added_at, 10);
+    }
+
+    #[test]
+    fn playlist_store_moves_songs_between_collections() {
+        let store = PlaylistStore::new();
+        let source_id = store.create_collection("Source".to_string(), CollectionVisibility::Personal);
+        let target_id = store.create_collection("Target".to_string(), CollectionVisibility::Personal);
+        store.add_to_collection(&source_id, song("song-a"));
+        store.add_to_collection(&source_id, song("song-b"));
+
+        assert!(store.move_songs_to_collection(&source_id, &target_id, &["song-a".to_string()]));
+        let all = store.get_all();
+        let source = all.iter().find(|collection| collection.id == source_id).unwrap();
+        let target = all.iter().find(|collection| collection.id == target_id).unwrap();
+        assert_eq!(source.songs.iter().map(|song| song.id.as_str()).collect::<Vec<_>>(), vec!["song-b"]);
+        assert_eq!(target.songs.iter().map(|song| song.id.as_str()).collect::<Vec<_>>(), vec!["song-a"]);
     }
 
     #[test]

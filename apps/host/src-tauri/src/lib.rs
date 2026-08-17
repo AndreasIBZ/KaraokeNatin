@@ -169,6 +169,8 @@ pub fn run() {
             commands::playlist_set_visibility,
             commands::playlist_add_song,
             commands::playlist_remove_song,
+            commands::playlist_resolve_song,
+            commands::playlist_move_songs,
             commands::playlist_import_collection,
             commands::preview_spotify_playlist_import,
             commands::preview_karaoke_json_playlist_import,

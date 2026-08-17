@@ -137,6 +137,31 @@ export async function playlistRemoveSong(collectionId: string, songId: string): 
     return await invoke('playlist_remove_song', { collectionId, songId });
 }
 
+export interface YouTubeSearchResult {
+    id: string;
+    url: string;
+    title: string;
+    channel: string;
+    duration: string;
+    thumbnail: string;
+}
+
+export async function playlistResolveSong(
+    collectionId: string,
+    songId: string,
+    result: YouTubeSearchResult,
+): Promise<void> {
+    return await invoke('playlist_resolve_song', { collectionId, songId, result });
+}
+
+export async function playlistMoveSongs(
+    sourceCollectionId: string,
+    targetCollectionId: string,
+    songIds: string[],
+): Promise<void> {
+    return await invoke('playlist_move_songs', { sourceCollectionId, targetCollectionId, songIds });
+}
+
 export async function playlistImportCollection(data: string): Promise<string> {
     return await invoke('playlist_import_collection', { data });
 }
