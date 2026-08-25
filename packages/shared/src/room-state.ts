@@ -32,6 +32,7 @@ export interface PlayerState {
     duration: number;       // seconds
     volume: number;         // 0-100
     isMuted: boolean;
+    autoPlayNext: boolean;
 }
 
 export interface ConnectedClient {
@@ -107,6 +108,7 @@ export function createInitialRoomState(roomId: string, hostPeerId: string): Room
             duration: 0,
             volume: 80,
             isMuted: false,
+            autoPlayNext: true,
         },
         queue: [],
         playlists: [],

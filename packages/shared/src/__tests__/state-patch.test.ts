@@ -25,6 +25,7 @@ function player(overrides: Partial<PlayerState> = {}): PlayerState {
         duration: 200,
         volume: 80,
         isMuted: false,
+        autoPlayNext: true,
         ...overrides,
     };
 }

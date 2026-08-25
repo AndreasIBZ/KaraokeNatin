@@ -1,7 +1,7 @@
 use crate::playlist_importer::{
     imported_playlist_to_collection, preview_from_imported, spotify_playlist_id_from_import,
     ImportPreview, ImportedPlaylist, KaraokeJsonImporter, PlaylistImporter, SpotifyHttpClient,
-    SpotifyPlaylistImporter,
+    SpotifyPlaylistImporter, TextPlaylistImporter,
 };
 use crate::room_state::{
     CollectionVisibility, PlayerStatus, PlaylistCollection, PlaylistStore, ResolutionStatus,
@@ -24,7 +24,10 @@ const PLAYER_DISPLAY_WINDOW_LABEL: &str = "player-display";
 pub enum ClientCommand {
     PLAY,
     PAUSE,
-    SKIP,
+    SKIP {
+        #[serde(default, rename = "autoPlay")]
+        auto_play: Option<bool>,
+    },
     SEEK { time: f64 },
     SET_VOLUME { volume: u8 },
     TOGGLE_MUTE,
@@ -230,8 +233,9 @@ pub async fn process_command(
         ClientCommand::PAUSE => {
             state.write().pause();
         }
-        ClientCommand::SKIP => {
-            state.write().skip_song();
+        ClientCommand::SKIP { auto_play } => {
+            let should_auto_play = auto_play.unwrap_or_else(|| state.clone_player().auto_play_next);
+            state.write().skip_song(should_auto_play);
         }
         ClientCommand::SEEK { time } => {
             state.write().seek(time);
@@ -500,6 +504,17 @@ pub fn update_player_state(
     // resending the whole room.
     emit_player_patch(&app, &state)?;
 
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_auto_play_next(
+    auto_play_next: bool,
+    state: tauri::State<RoomStateManager>,
+    app: AppHandle,
+) -> Result<(), String> {
+    state.write().set_auto_play_next(auto_play_next);
+    emit_state(&app, &state)?;
     Ok(())
 }
 
@@ -865,6 +880,12 @@ pub async fn preview_spotify_playlist_import(
 #[tauri::command]
 pub fn preview_karaoke_json_playlist_import(data: String) -> Result<ImportPreview, String> {
     let playlist = KaraokeJsonImporter.import(&data)?;
+    Ok(preview_from_imported(playlist, None))
+}
+
+#[tauri::command]
+pub fn preview_text_playlist_import(data: String) -> Result<ImportPreview, String> {
+    let playlist = TextPlaylistImporter.import(&data)?;
     Ok(preview_from_imported(playlist, None))
 }
 

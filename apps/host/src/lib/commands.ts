@@ -75,6 +75,10 @@ export async function updatePlayerState(state: {
     });
 }
 
+export async function setAutoPlayNext(autoPlayNext: boolean): Promise<void> {
+    return await invoke('set_auto_play_next', { autoPlayNext });
+}
+
 export async function openPlayerDisplay(): Promise<void> {
     return await invoke('open_player_display');
 }
@@ -172,11 +176,13 @@ export async function playlistImportCollection(data: string): Promise<string> {
 
 export type ImportedPlaylistSource =
     | { type: 'local'; playlistId?: null; originalUrl?: null }
-    | { type: 'spotify'; playlistId?: string | null; originalUrl?: string | null };
+    | { type: 'spotify'; playlistId?: string | null; originalUrl?: string | null }
+    | { type: 'youtube'; playlistId?: null; originalUrl?: string | null };
 
 export type ImportedTrackSource =
     | { type: 'local'; playlistId?: null; trackId?: string | null; url?: string | null }
-    | { type: 'spotify'; playlistId?: string | null; trackId?: string | null; url?: string | null };
+    | { type: 'spotify'; playlistId?: string | null; trackId?: string | null; url?: string | null }
+    | { type: 'youtube'; playlistId?: null; trackId?: string | null; url?: string | null };
 
 export interface ImportedTrack {
     title: string;
@@ -208,6 +214,10 @@ export async function previewSpotifyPlaylistImport(url: string): Promise<ImportP
 
 export async function previewKaraokeJsonPlaylistImport(data: string): Promise<ImportPreview> {
     return await invoke('preview_karaoke_json_playlist_import', { data });
+}
+
+export async function previewTextPlaylistImport(data: string): Promise<ImportPreview> {
+    return await invoke('preview_text_playlist_import', { data });
 }
 
 export async function confirmPlaylistImport(

@@ -10,7 +10,7 @@ import { RoomState, CollectionVisibility } from './room-state';
 export type ClientCommand =
     | { type: 'PLAY' }
     | { type: 'PAUSE' }
-    | { type: 'SKIP' }
+    | { type: 'SKIP'; autoPlay?: boolean }
     | { type: 'SEEK'; time: number }
     | { type: 'SET_VOLUME'; volume: number }
     | { type: 'TOGGLE_MUTE' }

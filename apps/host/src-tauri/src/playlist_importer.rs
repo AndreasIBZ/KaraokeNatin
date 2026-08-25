@@ -14,6 +14,7 @@ const SPOTIFY_TIMEOUT_SECONDS: u64 = 12;
 pub enum ImportSourceType {
     Local,
     Spotify,
+    Youtube,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +101,14 @@ impl SpotifyPlaylistImporter {
 impl PlaylistImporter for SpotifyPlaylistImporter {
     fn import(&self, _input: &str) -> Result<ImportedPlaylist, String> {
         SpotifyEmbedParser::new(&self.playlist_id, &self.original_url).parse(&self.html)
+    }
+}
+
+pub struct TextPlaylistImporter;
+
+impl PlaylistImporter for TextPlaylistImporter {
+    fn import(&self, input: &str) -> Result<ImportedPlaylist, String> {
+        parse_text_playlist(input)
     }
 }
 
@@ -286,18 +295,34 @@ fn parse_karaoke_json(input: &str) -> Result<ImportedPlaylist, String> {
                 track_id: None,
                 url: None,
             });
+            let source_type = match source.source_type.as_str() {
+                "spotify" => ImportSourceType::Spotify,
+                "youtube" => ImportSourceType::Youtube,
+                _ => ImportSourceType::Local,
+            };
+            let youtube_video_id = if source_type == ImportSourceType::Youtube {
+                source.track_id.clone()
+            } else {
+                None
+            };
+            let resolution_status = if youtube_video_id.as_deref().map(is_valid_youtube_video_id).unwrap_or(false) {
+                ResolutionStatus::Resolved
+            } else {
+                ResolutionStatus::Unresolved
+            };
+
             ImportedTrack {
                 title: clean_text(&track.title),
                 artists: track.artists.into_iter().map(|a| clean_text(&a)).filter(|a| !a.is_empty()).collect(),
                 duration_ms: track.duration_ms,
                 source: ImportedTrackSource {
-                    source_type: if source.source_type == "spotify" { ImportSourceType::Spotify } else { ImportSourceType::Local },
+                    source_type,
                     playlist_id: None,
                     track_id: source.track_id,
                     url: source.url,
                 },
-                youtube_video_id: None,
-                resolution_status: ResolutionStatus::Unresolved,
+                youtube_video_id,
+                resolution_status,
             }
         })
         .filter(|track| !track.artists.is_empty())
@@ -312,6 +337,189 @@ fn parse_karaoke_json(input: &str) -> Result<ImportedPlaylist, String> {
     })
 }
 
+fn parse_text_playlist(input: &str) -> Result<ImportedPlaylist, String> {
+    if input.lines().any(|line| contains_youtube_playlist_url(line.trim())) {
+        return Err("Los enlaces de playlist de YouTube todavia no se importan directamente. Pega titulos o enlaces de video individuales.".to_string());
+    }
+
+    let mut tracks = Vec::new();
+    let mut seen_youtube_ids = HashSet::new();
+    let mut seen_plain_text = HashSet::new();
+
+    for line in input.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let parsed = parse_text_playlist_line(line);
+        let Some(track) = parsed else { continue; };
+
+        if let Some(video_id) = &track.youtube_video_id {
+            if !seen_youtube_ids.insert(video_id.clone()) {
+                continue;
+            }
+        } else {
+            let key = normalize_text_import_key(line);
+            if key.is_empty() || !seen_plain_text.insert(key) {
+                continue;
+            }
+        }
+
+        tracks.push(track);
+    }
+
+    if tracks.is_empty() {
+        return Err("No se han encontrado canciones importables en el texto.".to_string());
+    }
+
+    Ok(ImportedPlaylist {
+        name: "Imported Playlist".to_string(),
+        description: Some("Imported from pasted text".to_string()),
+        source: ImportedPlaylistSource {
+            source_type: ImportSourceType::Local,
+            playlist_id: None,
+            original_url: None,
+        },
+        imported_at: chrono::Utc::now().timestamp_millis(),
+        tracks,
+    })
+}
+
+fn parse_text_playlist_line(line: &str) -> Option<ImportedTrack> {
+    let (label, url) = split_text_playlist_label_and_url(line);
+    let youtube_video_id = url.as_deref().and_then(parse_youtube_video_id);
+    let (title, artists) = parse_plain_track_label(label.as_deref().unwrap_or(line), youtube_video_id.as_deref());
+    if title.is_empty() || artists.is_empty() {
+        return None;
+    }
+
+    let is_resolved = youtube_video_id.is_some();
+
+    Some(ImportedTrack {
+        title,
+        artists,
+        duration_ms: None,
+        source: ImportedTrackSource {
+            source_type: if is_resolved { ImportSourceType::Youtube } else { ImportSourceType::Local },
+            playlist_id: None,
+            track_id: youtube_video_id.clone(),
+            url,
+        },
+        youtube_video_id,
+        resolution_status: if is_resolved {
+            ResolutionStatus::Resolved
+        } else {
+            ResolutionStatus::Unresolved
+        },
+    })
+}
+
+fn split_text_playlist_label_and_url(line: &str) -> (Option<String>, Option<String>) {
+    if let Some((label, rest)) = line.split_once('|') {
+        if let Some(url) = first_youtube_video_url(rest) {
+            let clean_label = label.trim();
+            return (
+                if clean_label.is_empty() { None } else { Some(clean_label.to_string()) },
+                Some(url),
+            );
+        }
+    }
+
+    if let Some(url) = first_youtube_video_url(line) {
+        let label = line.replace(&url, "");
+        let label = label.trim_matches(|c: char| c.is_whitespace() || matches!(c, '-' | '|' | ':' | ','));
+        return (
+            if label.is_empty() { None } else { Some(label.to_string()) },
+            Some(url),
+        );
+    }
+
+    (Some(line.to_string()), None)
+}
+
+fn parse_plain_track_label(label: &str, youtube_video_id: Option<&str>) -> (String, Vec<String>) {
+    let cleaned = clean_text(label);
+    if cleaned.is_empty() {
+        return youtube_video_id
+            .map(|id| (format!("YouTube Video {}", id), vec!["YouTube".to_string()]))
+            .unwrap_or_default();
+    }
+
+    for separator in [" - ", " -- "] {
+        if let Some((artist, title)) = cleaned.split_once(separator) {
+            let artist = clean_text(artist);
+            let title = clean_text(title);
+            if !artist.is_empty() && !title.is_empty() {
+                return (title, vec![artist]);
+            }
+        }
+    }
+
+    (cleaned, vec!["Unknown Artist".to_string()])
+}
+
+fn first_youtube_video_url(input: &str) -> Option<String> {
+    input.split_whitespace()
+        .map(|part| part.trim_matches(|c: char| matches!(c, '"' | '\'' | ')' | '(' | '[' | ']' | '<' | '>' | ',' | ';')))
+        .find(|part| parse_youtube_video_id(part).is_some())
+        .map(str::to_string)
+}
+
+fn parse_youtube_video_id(input: &str) -> Option<String> {
+    let url = Url::parse(input).ok()?;
+    let host = url.host_str()?.trim_start_matches("www.").trim_start_matches("m.");
+    let id = match host {
+        "youtu.be" => url.path_segments()?.next().map(str::to_string),
+        "youtube.com" | "music.youtube.com" => {
+            let mut segments = url.path_segments()?;
+            match segments.next() {
+                Some("watch") => url.query_pairs()
+                    .find(|(key, _)| key == "v")
+                    .map(|(_, value)| value.into_owned()),
+                Some("shorts") | Some("embed") => segments.next().map(str::to_string),
+                _ => None,
+            }
+        }
+        _ => None,
+    }?;
+
+    if is_valid_youtube_video_id(&id) {
+        Some(id)
+    } else {
+        None
+    }
+}
+
+fn contains_youtube_playlist_url(input: &str) -> bool {
+    input.split_whitespace().any(|part| {
+        let clean = part.trim_matches(|c: char| matches!(c, '"' | '\'' | ')' | '(' | '[' | ']' | '<' | '>' | ',' | ';'));
+        if parse_youtube_video_id(clean).is_some() {
+            return false;
+        }
+        let Ok(url) = Url::parse(clean) else { return false; };
+        let Some(host) = url.host_str() else { return false; };
+        let host = host.trim_start_matches("www.").trim_start_matches("m.");
+        if host != "youtube.com" && host != "music.youtube.com" && host != "youtu.be" {
+            return false;
+        }
+        if url.path_segments().and_then(|mut segments| segments.next()) == Some("playlist") {
+            return true;
+        }
+        url.query_pairs().any(|(key, _)| key == "list")
+    })
+}
+
+fn is_valid_youtube_video_id(value: &str) -> bool {
+    value.len() == 11 && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn normalize_text_import_key(value: &str) -> String {
+    value
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn imported_playlist_to_collection(imported: ImportedPlaylist, existing_id: Option<String>) -> PlaylistCollection {
     let now = chrono::Utc::now().timestamp_millis();
     let source = match &imported.source.source_type {
@@ -320,7 +528,7 @@ pub fn imported_playlist_to_collection(imported: ImportedPlaylist, existing_id: 
             original_url: imported.source.original_url.clone().unwrap_or_default(),
             imported_at: imported.imported_at,
         }),
-        ImportSourceType::Local => Some(PlaylistSource::Local),
+        ImportSourceType::Local | ImportSourceType::Youtube => Some(PlaylistSource::Local),
     };
 
     let songs = imported.tracks.into_iter().map(|track| {
@@ -343,6 +551,10 @@ pub fn imported_playlist_to_collection(imported: ImportedPlaylist, existing_id: 
                 ImportSourceType::Spotify => SongSource::Spotify {
                     playlist_id: track.source.playlist_id,
                     track_id: track.source.track_id,
+                    url: track.source.url,
+                },
+                ImportSourceType::Youtube => SongSource::Youtube {
+                    video_id: if youtube_id.is_empty() { track.source.track_id } else { Some(youtube_id) },
                     url: track.source.url,
                 },
                 ImportSourceType::Local => SongSource::Local,
@@ -732,9 +944,64 @@ mod tests {
     }
 
     #[test]
+    fn karaoke_json_restores_youtube_source_as_resolved() {
+        let parsed = KaraokeJsonImporter.import(r#"{
+          "format": "karaoke-playlist",
+          "version": 1,
+          "name": "Videos",
+          "tracks": [
+            {"title":"Bohemian Rhapsody","artists":["Queen"],"duration_ms":354000,"source":{"type":"youtube","track_id":"fJ9rUzIMcZQ","url":"https://youtu.be/fJ9rUzIMcZQ"}}
+          ]
+        }"#).unwrap();
+        assert_eq!(parsed.tracks[0].youtube_video_id.as_deref(), Some("fJ9rUzIMcZQ"));
+        assert_eq!(parsed.tracks[0].source.source_type, ImportSourceType::Youtube);
+        assert_eq!(parsed.tracks[0].resolution_status, ResolutionStatus::Resolved);
+    }
+
+    #[test]
     fn karaoke_json_rejects_invalid_json_format_and_future_version() {
         assert!(KaraokeJsonImporter.import("not json").is_err());
         assert!(KaraokeJsonImporter.import(r#"{"format":"wrong","version":1,"name":"x","tracks":[]}"#).is_err());
         assert!(KaraokeJsonImporter.import(r#"{"format":"karaoke-playlist","version":99,"name":"x","tracks":[]}"#).is_err());
+    }
+
+    #[test]
+    fn text_importer_accepts_plain_lines_and_preserves_order() {
+        let parsed = TextPlaylistImporter.import("Queen - Radio Ga Ga\r\nDua Lipa - Houdini\n  The Killers - Mr Brightside  ").unwrap();
+        assert_eq!(parsed.tracks.len(), 3);
+        assert_eq!(parsed.tracks[0].title, "Radio Ga Ga");
+        assert_eq!(parsed.tracks[0].artists, vec!["Queen"]);
+        assert_eq!(parsed.tracks[1].title, "Houdini");
+        assert_eq!(parsed.tracks[2].resolution_status, ResolutionStatus::Unresolved);
+    }
+
+    #[test]
+    fn text_importer_accepts_youtube_video_urls() {
+        let parsed = TextPlaylistImporter.import(
+            "Queen - We Are The Champions | https://www.youtube.com/watch?v=04854XqcfCY\r\nhttps://youtu.be/fJ9rUzIMcZQ\nhttps://youtube.com/shorts/9bZkp7q19f0",
+        ).unwrap();
+        assert_eq!(parsed.tracks.len(), 3);
+        assert_eq!(parsed.tracks[0].title, "We Are The Champions");
+        assert_eq!(parsed.tracks[0].youtube_video_id.as_deref(), Some("04854XqcfCY"));
+        assert_eq!(parsed.tracks[0].source.source_type, ImportSourceType::Youtube);
+        assert_eq!(parsed.tracks[0].resolution_status, ResolutionStatus::Resolved);
+        assert_eq!(parsed.tracks[1].youtube_video_id.as_deref(), Some("fJ9rUzIMcZQ"));
+        assert_eq!(parsed.tracks[2].youtube_video_id.as_deref(), Some("9bZkp7q19f0"));
+    }
+
+    #[test]
+    fn text_importer_deduplicates_plain_text_and_youtube_ids() {
+        let parsed = TextPlaylistImporter.import(
+            "Queen - Radio Ga Ga\nqueen radio ga ga\nFirst | https://youtu.be/04854XqcfCY\nSecond | https://www.youtube.com/watch?v=04854XqcfCY",
+        ).unwrap();
+        assert_eq!(parsed.tracks.len(), 2);
+        assert_eq!(parsed.tracks[0].title, "Radio Ga Ga");
+        assert_eq!(parsed.tracks[1].youtube_video_id.as_deref(), Some("04854XqcfCY"));
+    }
+
+    #[test]
+    fn text_importer_rejects_youtube_playlist_urls() {
+        let err = TextPlaylistImporter.import("https://www.youtube.com/playlist?list=PL123").unwrap_err();
+        assert!(err.contains("playlist de YouTube"));
     }
 }

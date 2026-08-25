@@ -18,6 +18,7 @@ declare global {
 
 interface YouTubePlayer {
     loadVideoById(videoId: string | { videoId: string; startSeconds?: number }): void;
+    cueVideoById(videoId: string | { videoId: string; startSeconds?: number }): void;
     playVideo(): void;
     pauseVideo(): void;
     stopVideo?: () => void;
@@ -125,6 +126,8 @@ const Player = ({ roomState: providedRoomState, displayOnly = false, hideFullscr
     const [lastSongTitle, setLastSongTitle] = useState('');
     const [playbackNotice, setPlaybackNotice] = useState<string | null>(null);
     const playerClearedRef = useRef(false);
+    const playerStatusRef = useRef(roomState?.player.status);
+    const autoPlayNextRef = useRef(roomState?.player.autoPlayNext ?? true);
 
     // Real scoring: coverage of the song's runtime with mic-level input.
     // start()/stop() are referentially stable across renders (see the hook),
@@ -141,6 +144,10 @@ const Player = ({ roomState: providedRoomState, displayOnly = false, hideFullscr
 
     const { ref: focusRef, focusKey } = useFocusable();
 
+    useEffect(() => {
+        playerStatusRef.current = roomState?.player.status;
+        autoPlayNextRef.current = roomState?.player.autoPlayNext ?? true;
+    }, [roomState?.player.status, roomState?.player.autoPlayNext]);
 
     // Handle fullscreen change events
     useEffect(() => {
@@ -287,20 +294,22 @@ const Player = ({ roomState: providedRoomState, displayOnly = false, hideFullscr
                     stopOrphanedPlayback('cued without current song');
                     return;
                 }
-                // Video is ready, auto-play it
-                console.log('[Player] Video cued, starting playback');
-                ytPlayerRef.current?.playVideo();
-                status = 'loading';
+                if (autoPlayNextRef.current && playerStatusRef.current !== 'paused') {
+                    console.log('[Player] Video cued, starting playback');
+                    ytPlayerRef.current?.playVideo();
+                    status = 'loading';
+                } else {
+                    console.log('[Player] Video cued, waiting for manual play');
+                    status = 'paused';
+                }
                 break;
             case window.YT.PlayerState.ENDED:
                 if (!currentSongRef.current) {
                     void updatePlayerState('idle');
                     return;
                 }
-                status = 'idle';
-                // Show scoring overlay before skipping
                 handleSongEnded();
-                break;
+                return;
         }
 
         updatePlayerState(status);
@@ -436,7 +445,7 @@ const Player = ({ roomState: providedRoomState, displayOnly = false, hideFullscr
         if (!wasTracking) {
             try {
                 await invoke('process_command', {
-                    command: { type: 'SKIP' },
+                    command: { type: 'SKIP', autoPlay: roomState?.player.autoPlayNext ?? true },
                 });
             } catch (error) {
                 console.error('[Player] Failed to skip song:', error);
@@ -452,13 +461,13 @@ const Player = ({ roomState: providedRoomState, displayOnly = false, hideFullscr
             console.error('[Player] Failed to read mic coverage, skipping score:', error);
             try {
                 await invoke('process_command', {
-                    command: { type: 'SKIP' },
+                    command: { type: 'SKIP', autoPlay: roomState?.player.autoPlayNext ?? true },
                 });
             } catch (skipError) {
                 console.error('[Player] Failed to skip song:', skipError);
             }
         }
-    }, [displayOnly, roomState?.player.currentSong?.title, micStop]);
+    }, [displayOnly, roomState?.player.currentSong?.title, roomState?.player.autoPlayNext, micStop]);
 
     // Called when scoring animation completes
     const handleScoringComplete = useCallback(async () => {
@@ -466,12 +475,12 @@ const Player = ({ roomState: providedRoomState, displayOnly = false, hideFullscr
         setShowScoring(false);
         try {
             await invoke('process_command', {
-                command: { type: 'SKIP' },
+                command: { type: 'SKIP', autoPlay: roomState?.player.autoPlayNext ?? true },
             });
         } catch (error) {
             console.error('[Player] Failed to skip song:', error);
         }
-    }, [displayOnly]);
+    }, [displayOnly, roomState?.player.autoPlayNext]);
 
     // Load new song when current song changes
     useEffect(() => {
@@ -495,7 +504,11 @@ const Player = ({ roomState: providedRoomState, displayOnly = false, hideFullscr
             if (ytPlayerRef.current && isPlayerReady) {
                 console.log('[Player] Loading video:', currentSong.youtubeId);
                 const startSeconds = resolveStartSeconds(currentSong.id, roomState?.player.currentTime, roomState?.player.duration);
-                ytPlayerRef.current.loadVideoById(
+                const shouldAutoPlay = roomState?.player.status !== 'paused' && roomState?.player.autoPlayNext !== false;
+                const loadVideo = shouldAutoPlay
+                    ? ytPlayerRef.current.loadVideoById.bind(ytPlayerRef.current)
+                    : ytPlayerRef.current.cueVideoById.bind(ytPlayerRef.current);
+                loadVideo(
                     startSeconds === undefined
                         ? currentSong.youtubeId
                         : { videoId: currentSong.youtubeId, startSeconds }

@@ -7,6 +7,8 @@ import ModeSelect from './components/ModeSelect';
 import Library from './components/Library';
 import { useRoomState, setHostInputFocused } from './hooks/useRoomState';
 import type { Song } from './hooks/useRoomState';
+import { useSongSearch } from './hooks/useSongSearch';
+import type { SearchResult } from '@karaokenatin/shared';
 import { usePeerHost } from './hooks/usePeerHost';
 import HelpDialog from './components/HelpDialog';
 import { invoke } from '@tauri-apps/api/core';
@@ -21,6 +23,7 @@ import {
   getSessionHistory,
   loadCollectionFromFile,
   playlistImportCollection,
+  setAutoPlayNext,
 } from './lib/commands';
 import { AlertTriangle, Clapperboard, SlidersHorizontal, Unplug, ArrowLeft, HelpCircle, X, Maximize2, Minimize2, Search, Plus, History } from 'lucide-react';
 
@@ -35,15 +38,6 @@ init({
   debug: false,
   visualDebug: false,
 });
-
-interface SearchResult {
-  id: string;
-  url: string;
-  title: string;
-  channel: string;
-  duration: string;
-  thumbnail: string;
-}
 
 type AppMode = 'select' | 'host' | 'guest' | 'library';
 
@@ -254,14 +248,13 @@ function HostView({ onBack }: { onBack: () => void }) {
     kickClient,
   } = usePeerHost();
   const [isPanelCollapsed, setIsPanelCollapsed] = useState(false);
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [searching, setSearching] = useState(false);
   const [sessionHistory, setSessionHistory] = useState<Song[]>([]);
-  const [karaokeOnly, setKaraokeOnly] = useState(() => localStorage.getItem('karaoke_search_karaoke_only') !== 'false');
+  const songSearch = useSongSearch(10);
+  const [autoPlayNext, setAutoPlayNextState] = useState(() => localStorage.getItem('festejar_auto_play_next') !== 'false');
   const [isMobile, setIsMobile] = useState(false);
   const [activeTab, setActiveTab] = useState<'player' | 'controls'>('player');
   const [isPlayerDisplayOpen, setIsPlayerDisplayOpen] = useState(false);
-  const searchRequestRef = useRef(0);
+  const searchSongs = songSearch.search;
 
   const { ref, focusKey } = useFocusable();
 
@@ -306,8 +299,12 @@ function HostView({ onBack }: { onBack: () => void }) {
   }, [isPanelCollapsed, isMobile]);
 
   useEffect(() => {
-    localStorage.setItem('karaoke_search_karaoke_only', karaokeOnly ? 'true' : 'false');
-  }, [karaokeOnly]);
+    localStorage.setItem('festejar_auto_play_next', autoPlayNext ? 'true' : 'false');
+    if (!roomState) return;
+    void setAutoPlayNext(autoPlayNext).catch((error) => {
+      console.error('[Host] Failed to update Auto-Play preference:', error);
+    });
+  }, [autoPlayNext, roomState?.roomId]);
 
   const refreshSessionHistory = useCallback(async () => {
     try {
@@ -335,24 +332,9 @@ function HostView({ onBack }: { onBack: () => void }) {
     };
   }, []);
 
-  const handleSearch = async (query: string) => {
-    const requestId = searchRequestRef.current + 1;
-    searchRequestRef.current = requestId;
-    setSearching(true);
-    setSearchResults([]);
-    try {
-      const results = await invoke<SearchResult[]>('search_youtube', { query, limit: 10, karaokeOnly });
-      if (requestId === searchRequestRef.current) {
-        setSearchResults(results);
-      }
-    } catch (error) {
-      console.error('Search failed:', error);
-    } finally {
-      if (requestId === searchRequestRef.current) {
-        setSearching(false);
-      }
-    }
-  };
+  const handleSearch = useCallback(async (query: string) => {
+    await searchSongs(query);
+  }, [searchSongs]);
 
   const handleQueueSearchResult = useCallback(async (result: SearchResult) => {
     await invoke('queue_search_result', { result, addedBy: 'Host' });
@@ -433,26 +415,37 @@ function HostView({ onBack }: { onBack: () => void }) {
         {/* Main player area */}
         <div className={`main-area ${isMobile && activeTab !== 'player' ? 'hidden-mobile' : ''}`}>
           <PlayerSearchDock
-            searching={searching}
-            searchResults={searchResults}
+            searching={songSearch.loading}
+            searchResults={songSearch.results}
             sessionHistory={sessionHistory}
-            karaokeOnly={karaokeOnly}
-            onKaraokeOnlyChange={setKaraokeOnly}
+            karaokeOnly={songSearch.karaokeOnly}
+            onKaraokeOnlyChange={songSearch.setKaraokeOnly}
             onSearch={handleSearch}
             onQueueResult={handleQueueSearchResult}
             onQueueHistorySong={handleQueueHistorySong}
           />
           {isPlayerDisplayOpen ? (
             <div className="detached-player-placeholder">
-              <div className="detached-player-kicker">Player Display activo</div>
-              <h2>El video esta en la pantalla secundaria</h2>
               {roomState?.player.currentSong ? (
-                <p>
-                  {roomState.player.currentSong.title}
-                  {' '}· Added by {roomState.player.currentSong.addedBy}
-                </p>
+                <div className="detached-player-card">
+                  <img
+                    className="detached-player-thumb"
+                    src={roomState.player.currentSong.thumbnailUrl || `https://i.ytimg.com/vi/${roomState.player.currentSong.youtubeId}/hqdefault.jpg`}
+                    alt=""
+                  />
+                  <div className="detached-player-copy">
+                    <div className="detached-player-kicker">Player Display activo</div>
+                    <h2>{roomState.player.currentSong.title}</h2>
+                    <p>{roomState.player.currentSong.artist || 'Unknown Artist'}</p>
+                    <p>Added by {roomState.player.currentSong.addedBy || 'Guest'}</p>
+                  </div>
+                </div>
               ) : (
-                <p>No hay ninguna cancion reproduciendose ahora mismo.</p>
+                <>
+                  <div className="detached-player-kicker">FESTEJAR</div>
+                  <h2>Player Display activo</h2>
+                  <p>No hay ninguna cancion reproduciendose ahora mismo.</p>
+                </>
               )}
             </div>
           ) : (
@@ -483,10 +476,12 @@ function HostView({ onBack }: { onBack: () => void }) {
             isCollapsed={isMobile ? false : isPanelCollapsed}
             onToggle={() => setIsPanelCollapsed(!isPanelCollapsed)}
             onSearch={handleSearch}
-            karaokeOnly={karaokeOnly}
-            onKaraokeOnlyChange={setKaraokeOnly}
-            searchResults={searchResults}
-            searching={searching}
+            karaokeOnly={songSearch.karaokeOnly}
+            onKaraokeOnlyChange={songSearch.setKaraokeOnly}
+            autoPlayNext={autoPlayNext}
+            onAutoPlayNextChange={setAutoPlayNextState}
+            searchResults={songSearch.results}
+            searching={songSearch.loading}
             onAddToPlaylist={handleAddToPlaylist}
             playerDisplayOpen={isPlayerDisplayOpen}
             onOpenPlayerDisplay={handleOpenPlayerDisplay}

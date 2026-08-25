@@ -882,6 +882,12 @@ pub struct PlayerState {
     pub volume: u8,
     #[serde(rename = "isMuted")]
     pub is_muted: bool,
+    #[serde(default = "default_auto_play_next", rename = "autoPlayNext")]
+    pub auto_play_next: bool,
+}
+
+fn default_auto_play_next() -> bool {
+    true
 }
 
 /// Connected client information
@@ -927,6 +933,7 @@ impl RoomState {
                 duration: 0.0,
                 volume: 80,
                 is_muted: false,
+                auto_play_next: true,
             },
             queue: Vec::new(),
             playlists,
@@ -1090,12 +1097,17 @@ impl RoomState {
     }
 
     /// Skip to next song
-    pub fn skip_song(&mut self) {
+    pub fn skip_song(&mut self, auto_play: bool) {
         if !self.queue.is_empty() {
             let next_song = self.queue.remove(0);
             self.player.current_song = Some(next_song);
             self.player.current_time = 0.0;
-            self.player.status = PlayerStatus::Loading;
+            self.player.duration = 0.0;
+            self.player.status = if auto_play {
+                PlayerStatus::Loading
+            } else {
+                PlayerStatus::Paused
+            };
         } else {
             self.player.current_song = None;
             self.player.current_time = 0.0;
@@ -1118,6 +1130,11 @@ impl RoomState {
             self.player.status = PlayerStatus::Loading;
             self.touch();
         }
+    }
+
+    pub fn set_auto_play_next(&mut self, auto_play_next: bool) {
+        self.player.auto_play_next = auto_play_next;
+        self.touch();
     }
 
     pub fn stop_if_current_youtube_id(&mut self, youtube_id: &str) -> bool {
@@ -1240,6 +1257,50 @@ mod tests {
 
         assert!(matches!(state.player.status, PlayerStatus::Idle));
         assert!(state.player.current_song.is_none());
+        assert_eq!(state.player.current_time, 0.0);
+        assert_eq!(state.player.duration, 0.0);
+    }
+
+    #[test]
+    fn skip_song_with_auto_play_on_loads_next_song() {
+        let mut state = room();
+        state.player.current_song = Some(song("current"));
+        state.queue.push(song("next"));
+
+        state.skip_song(true);
+
+        assert_eq!(state.player.current_song.as_ref().map(|song| song.id.as_str()), Some("next"));
+        assert!(matches!(state.player.status, PlayerStatus::Loading));
+        assert_eq!(state.player.current_time, 0.0);
+        assert_eq!(state.player.duration, 0.0);
+    }
+
+    #[test]
+    fn skip_song_with_auto_play_off_cues_next_song_paused() {
+        let mut state = room();
+        state.player.current_song = Some(song("current"));
+        state.queue.push(song("next"));
+
+        state.skip_song(false);
+
+        assert_eq!(state.player.current_song.as_ref().map(|song| song.id.as_str()), Some("next"));
+        assert!(matches!(state.player.status, PlayerStatus::Paused));
+        assert_eq!(state.player.current_time, 0.0);
+        assert_eq!(state.player.duration, 0.0);
+    }
+
+    #[test]
+    fn skip_song_with_empty_queue_clears_player_regardless_of_auto_play() {
+        let mut state = room();
+        state.player.current_song = Some(song("current"));
+        state.player.status = PlayerStatus::Playing;
+        state.player.current_time = 42.0;
+        state.player.duration = 180.0;
+
+        state.skip_song(true);
+
+        assert!(state.player.current_song.is_none());
+        assert!(matches!(state.player.status, PlayerStatus::Idle));
         assert_eq!(state.player.current_time, 0.0);
         assert_eq!(state.player.duration, 0.0);
     }
