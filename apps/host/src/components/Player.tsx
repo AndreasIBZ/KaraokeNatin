@@ -128,6 +128,7 @@ const Player = ({ roomState: providedRoomState, displayOnly = false, hideFullscr
     const playerClearedRef = useRef(false);
     const playerStatusRef = useRef(roomState?.player.status);
     const autoPlayNextRef = useRef(roomState?.player.autoPlayNext ?? true);
+    const programmaticLoadRef = useRef<{ songId: string; autoPlay: boolean } | null>(null);
 
     // Real scoring: coverage of the song's runtime with mic-level input.
     // start()/stop() are referentially stable across renders (see the hook),
@@ -263,6 +264,9 @@ const Player = ({ roomState: providedRoomState, displayOnly = false, hideFullscr
                     stopOrphanedPlayback('playing without current song');
                     return;
                 }
+                if (programmaticLoadRef.current?.songId === currentSongRef.current.id) {
+                    programmaticLoadRef.current = null;
+                }
                 status = 'playing';
                 // Start mic coverage tracking the first time this song
                 // actually starts playing (not on every PLAYING transition,
@@ -280,6 +284,13 @@ const Player = ({ roomState: providedRoomState, displayOnly = false, hideFullscr
                     void updatePlayerState('idle');
                     return;
                 }
+                if (
+                    programmaticLoadRef.current?.songId === currentSongRef.current.id &&
+                    programmaticLoadRef.current.autoPlay
+                ) {
+                    console.log('[Player] Ignoring transient pause during Auto-Play load');
+                    return;
+                }
                 status = 'paused';
                 break;
             case window.YT.PlayerState.BUFFERING:
@@ -294,7 +305,14 @@ const Player = ({ roomState: providedRoomState, displayOnly = false, hideFullscr
                     stopOrphanedPlayback('cued without current song');
                     return;
                 }
-                if (autoPlayNextRef.current && playerStatusRef.current !== 'paused') {
+                if (
+                    programmaticLoadRef.current?.songId === currentSongRef.current.id &&
+                    programmaticLoadRef.current.autoPlay
+                ) {
+                    console.log('[Player] Auto-Play load cued, starting playback');
+                    ytPlayerRef.current?.playVideo();
+                    status = 'loading';
+                } else if (autoPlayNextRef.current && playerStatusRef.current !== 'paused') {
                     console.log('[Player] Video cued, starting playback');
                     ytPlayerRef.current?.playVideo();
                     status = 'loading';
@@ -317,6 +335,7 @@ const Player = ({ roomState: providedRoomState, displayOnly = false, hideFullscr
 
     function stopOrphanedPlayback(reason: string) {
         console.log('[Player] Stopping orphaned YouTube playback:', reason);
+        programmaticLoadRef.current = null;
         playerClearedRef.current = true;
         loadedSongIdRef.current = null;
         setPlaybackNotice(null);
@@ -505,6 +524,7 @@ const Player = ({ roomState: providedRoomState, displayOnly = false, hideFullscr
                 console.log('[Player] Loading video:', currentSong.youtubeId);
                 const startSeconds = resolveStartSeconds(currentSong.id, roomState?.player.currentTime, roomState?.player.duration);
                 const shouldAutoPlay = roomState?.player.status !== 'paused' && roomState?.player.autoPlayNext !== false;
+                programmaticLoadRef.current = { songId: currentSong.id, autoPlay: shouldAutoPlay };
                 const loadVideo = shouldAutoPlay
                     ? ytPlayerRef.current.loadVideoById.bind(ytPlayerRef.current)
                     : ytPlayerRef.current.cueVideoById.bind(ytPlayerRef.current);
@@ -519,6 +539,7 @@ const Player = ({ roomState: providedRoomState, displayOnly = false, hideFullscr
             // Song was removed (queue empty after skip) - stop the player
             currentSongRef.current = null;
             loadedSongIdRef.current = null;
+            programmaticLoadRef.current = null;
             playerClearedRef.current = true;
             setPlaybackNotice(null);
             if (!displayOnly && micAttemptedRef.current) {
@@ -585,6 +606,7 @@ const Player = ({ roomState: providedRoomState, displayOnly = false, hideFullscr
             if (!playerClearedRef.current) {
                 currentSongRef.current = null;
                 loadedSongIdRef.current = null;
+                programmaticLoadRef.current = null;
                 playerClearedRef.current = true;
                 setPlaybackNotice(null);
                 stopAndClearPlayer(ytPlayerRef.current);
@@ -595,6 +617,12 @@ const Player = ({ roomState: providedRoomState, displayOnly = false, hideFullscr
         if (status === 'playing') {
             ytPlayerRef.current.playVideo();
         } else if (status === 'paused') {
+            if (
+                programmaticLoadRef.current?.songId === currentSong.id &&
+                programmaticLoadRef.current.autoPlay
+            ) {
+                return;
+            }
             ytPlayerRef.current.pauseVideo();
         }
     }, [isPlayerReady, roomState?.player.status, roomState?.player.currentSong]);
