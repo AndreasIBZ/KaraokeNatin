@@ -1266,6 +1266,7 @@
             activeTab: 'playing', // 'playing', 'search', 'queue', 'playlist'
             roomState: null,
             searchQuery: '',
+            lastSearchQuery: '',
             searchResults: [],
             searching: false,
             isInputFocused: false,
@@ -1369,6 +1370,18 @@
             const app = $('#app');
             const focusSnapshot = getFocusSnapshot();
 
+            if (canPatchFocusedSearch(focusSnapshot)) {
+                patchSearchTabDynamic();
+                syncSingerMirror();
+                return;
+            }
+
+            if (canPatchFocusedLibrary(focusSnapshot)) {
+                patchLibraryTabDynamic();
+                syncSingerMirror();
+                return;
+            }
+
             if (state.screen === 'join') {
                 app.innerHTML = renderJoinScreen();
                 restoreFocus(focusSnapshot);
@@ -1400,6 +1413,36 @@
             app.innerHTML = renderMainScreen();
             restoreFocus(focusSnapshot);
             requestAnimationFrame(syncSingerMirror);
+        }
+
+        function canPatchFocusedSearch(snapshot) {
+            return state.screen === 'connected' &&
+                state.activeTab === 'search' &&
+                (state.isInputFocused || snapshot?.id === 'search-input') &&
+                !!document.getElementById('search-status-slot') &&
+                !!document.getElementById('search-results-slot');
+        }
+
+        function patchSearchTabDynamic() {
+            const statusSlot = document.getElementById('search-status-slot');
+            const resultsSlot = document.getElementById('search-results-slot');
+            if (statusSlot) statusSlot.innerHTML = renderSearchStatus();
+            if (resultsSlot) resultsSlot.innerHTML = renderSearchResults();
+        }
+
+        function canPatchFocusedLibrary(snapshot) {
+            return state.screen === 'connected' &&
+                state.activeTab === 'library' &&
+                (state.isInputFocused || snapshot?.id === 'library-filter-input') &&
+                !!document.getElementById('library-song-list');
+        }
+
+        function patchLibraryTabDynamic() {
+            const activeCollection = state.localPlaylists[state.activeLocalCollectionIdx || 0];
+            const list = document.getElementById('library-song-list');
+            if (list && activeCollection) {
+                list.innerHTML = renderLibrarySongs(activeCollection, getFilteredLibrarySongs(activeCollection));
+            }
         }
 
         function getFocusSnapshot() {
@@ -1754,14 +1797,20 @@
             <section class="search-container">
                 <form class="search-input-wrapper" onsubmit="handleSearch(event)">
                     <input
-                        type="text"
+                        type="search"
                         class="search-input"
                         id="search-input"
+                        name="song-search"
                         placeholder="Search for songs..."
                         value="${escapeHtml(state.searchQuery)}"
                         onfocus="state.isInputFocused = true"
                         onblur="state.isInputFocused = false"
                         oninput="state.searchQuery = this.value"
+                        autocomplete="on"
+                        autocorrect="on"
+                        autocapitalize="words"
+                        spellcheck="true"
+                        enterkeyhint="search"
                     >
                         <button type="submit" class="search-btn">
                             Search
@@ -1779,14 +1828,22 @@
                 </div>
                 </section>
 
-            ${state.searching ? `
+                <div id="search-status-slot">${renderSearchStatus()}</div>
+                <div id="search-results-slot">${renderSearchResults()}</div>
+        `;
+        }
+
+        function renderSearchStatus() {
+            return state.searching ? `
                     <div class="loading" style="min-height: 200px;">
                         <div class="spinner"></div>
                         <p>Searching...</p>
                     </div>
-                ` : ''
-                }
+                ` : '';
+        }
 
+        function renderSearchResults() {
+            return `
                 ${!state.searching && state.searchResults.length > 0 ? `
                     <section class="search-results">
                         ${state.searchResults.map(result => {
@@ -1848,13 +1905,13 @@
                 ` : ''
                 }
 
-                ${!state.searching && state.searchResults.length === 0 && state.searchQuery ? `
+                ${!state.searching && state.searchResults.length === 0 && state.lastSearchQuery ? `
                     <div class="empty-state">
                         <p>No results found</p>
                     </div>
                 ` : ''
                 }
-        `;
+            `;
         }
 
         function renderQueueTab(queue) {
@@ -2042,16 +2099,23 @@
                 <div class="search-bar" style="margin: 0 16px 16px; position: sticky; top: -1px; background: var(--bg-primary); z-index: 10; padding: 8px 0;">
                     <div class="search-input-wrapper" style="background: var(--bg-secondary); border-radius: 99px; padding: 8px 16px; display: flex; align-items: center; gap: 8px;">
                         <span style="color: var(--text-tertiary);">${icons.search}</span>
-                        <input type="text" 
+                        <input type="search"
+                               id="library-filter-input"
+                               name="library-filter"
                                placeholder="Filter ${escapeHtml(activeCollection.name)}..." 
                                value="${escapeHtml(state.librarySearchQuery || '')}"
-                               oninput="state.librarySearchQuery = this.value; render();"
+                               oninput="handleLibraryFilterInput(this.value)"
+                               onfocus="state.isInputFocused = true"
+                               onblur="state.isInputFocused = false"
+                               autocomplete="on"
+                               autocorrect="on"
+                               autocapitalize="words"
+                               spellcheck="true"
+                               enterkeyhint="search"
                                style="background: transparent; border: none; color: var(--text-primary); flex: 1; outline: none; font-size: 16px;">
-                        ${state.librarySearchQuery ? `
-                            <button onclick="state.librarySearchQuery = ''; render();" style="border: none; background: transparent; color: var(--text-tertiary); padding: 4px;">
+                        <button id="library-filter-clear" onclick="clearLibraryFilter()" style="border: none; background: transparent; color: var(--text-tertiary); padding: 4px; display: ${state.librarySearchQuery ? 'inline-flex' : 'none'};">
                                 ${icons.x}
                             </button>
-                        ` : ''}
                     </div>
                 </div>
 
@@ -2066,12 +2130,18 @@
                 </section>
                 ` : ''}
 
-                <section class="queue-list">
-                    ${songs.length === 0 ? `
-                        <div class="empty-state" style="padding: 32px 0;">
-                            <p style="font-size: 14px;">${state.librarySearchQuery ? 'No matches found' : 'No songs in this collection'}</p>
-                        </div>
-                    ` : songs.map((song) => {
+                <section id="library-song-list" class="queue-list">
+                    ${renderLibrarySongs(activeCollection, songs)}
+                </section>
+            `;
+        }
+
+        function renderLibrarySongs(activeCollection, songs) {
+            return songs.length === 0 ? `
+                <div class="empty-state" style="padding: 32px 0;">
+                    <p style="font-size: 14px;">${state.librarySearchQuery ? 'No matches found' : 'No songs in this collection'}</p>
+                </div>
+            ` : songs.map((song) => {
                 const isLib2QueueLoading = state.loadingActions.has('lib2q_' + song.id);
                 return `
                         <div class="queue-item">
@@ -2089,9 +2159,40 @@
                                 </button>
                             </div>
                         </div>
-                    `}).join('')}
-                </section>
-            `;
+                    `}).join('');
+        }
+
+        function getFilteredLibrarySongs(activeCollection) {
+            let songs = activeCollection?.songs || [];
+            if (state.librarySearchQuery) {
+                const q = state.librarySearchQuery.toLowerCase();
+                songs = songs.filter(s =>
+                    s.title.toLowerCase().includes(q) ||
+                    (s.artist && s.artist.toLowerCase().includes(q))
+                );
+            }
+            return songs;
+        }
+
+        function handleLibraryFilterInput(value) {
+            state.librarySearchQuery = value;
+            const activeCollection = state.localPlaylists[state.activeLocalCollectionIdx || 0];
+            const list = document.getElementById('library-song-list');
+            const clear = document.getElementById('library-filter-clear');
+            if (clear) clear.style.display = state.librarySearchQuery ? 'inline-flex' : 'none';
+            if (list && activeCollection) {
+                list.innerHTML = renderLibrarySongs(activeCollection, getFilteredLibrarySongs(activeCollection));
+            }
+        }
+
+        function clearLibraryFilter() {
+            state.librarySearchQuery = '';
+            const input = document.getElementById('library-filter-input');
+            if (input) {
+                input.value = '';
+                input.focus();
+            }
+            handleLibraryFilterInput('');
         }
 
         // Event Handlers
@@ -2128,6 +2229,7 @@
             const query = input.value.trim();
             if (query) {
                 state.searchQuery = query;
+                state.lastSearchQuery = query;
                 state.searching = true;
                 state.searchResults = [];
                 state.addedSongs.clear(); // Clear added songs when doing a new search
